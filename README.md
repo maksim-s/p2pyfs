@@ -1,2 +1,3 @@
-6.824_final_project
+p2pyfs
 ===================
+YFS with a P2P extent server
