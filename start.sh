@@ -41,7 +41,7 @@ if [ $NUM_LS -gt 1 ]; then
     done
 else
     echo "starting ./lock_server $LOCK_PORT > lock_server.log 2>&1 &"
-    ./lock_server $LOCK_PORT > lock_server.log 2>&1 &
+    ./lock_server $LOCK_PORT $LOCK_PORT > lock_server.log 2>&1 &
     sleep 1
 fi
 

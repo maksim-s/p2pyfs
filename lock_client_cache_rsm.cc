@@ -106,7 +106,6 @@ lock_client_cache_rsm::~lock_client_cache_rsm()
 void
 lock_client_cache_rsm::releaser()
 {
-
   // This method should be a continuous loop, waiting to be notified of
   // freed locks that have been revoked by the server, so that it can
   // send a release RPC.
@@ -114,6 +113,7 @@ lock_client_cache_rsm::releaser()
     pthread_mutex_lock(&m);
     while (releaseset.empty()) {
       pthread_cond_wait(&release_cv, &m);
+      printf("[%s] releaser waking up [%d]\n", id.c_str(), releaseset.size());
     }
     lock_protocol::lockid_t lid;
     std::map<lock_protocol::lock_protocol::lockid_t, int>::iterator it;
@@ -125,10 +125,20 @@ lock_client_cache_rsm::releaser()
 
     cached_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
+
+    // Must do this check here, because despite code in revoke_handler
+    // I think there's is a chance two revokerequest sneak in for same lid
+    // and same xid
+    if (clck.status() == cached_lock_rsm::NONE) {
+      pthread_mutex_unlock(&clck.m);
+      continue;
+    }
+
     while (clck.status() != cached_lock_rsm::FREE) {
       // Wait till lock is FREE
       pthread_cond_wait(&clck.free_cv, &clck.m);
     }
+
     printf("[%s] releaser -> %llu [%d]\n", id.c_str(), lid, 
 	   clck.waiters.size());
     // Release lock at server
@@ -306,6 +316,7 @@ lock_client_cache_rsm::revoke_handler(lock_protocol::lockid_t lid,
     releaseset[lid]++;
     pthread_cond_signal(&release_cv); // At most one thread waiting
     pthread_mutex_unlock(&m);
+    printf("[%s] revoke_handler complete -> %llu\n", id.c_str(), lid);
   }
 
   return r;

@@ -98,7 +98,6 @@ lock_server_cache_rsm::revoker()
     revokeset.erase(lid);
     pthread_mutex_unlock(&m);
 
-    printf("revoker next round!\n");
     cachable_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
     std::string clt = clck.owner;
