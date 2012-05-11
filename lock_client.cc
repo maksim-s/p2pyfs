@@ -28,7 +28,8 @@ lock_client::stat(lock_protocol::lockid_t lid)
 }
 
 lock_protocol::status
-lock_client::acquire(lock_protocol::lockid_t lid)
+lock_client::acquire(lock_protocol::lockid_t lid, 
+		     lock_protocol::lock_type type)
 {
   int r;
   int ret = cl->call(lock_protocol::acquire, cl->id(), lid, r);

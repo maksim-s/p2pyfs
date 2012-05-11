@@ -1,8 +1,7 @@
 // yfs client.  implements FS operations using extent and lock server
 #include "yfs_client.h"
 #include "extent_client.h"
-//#include "lock_client.h"
-//#include "lock_client_cache.h"
+#include "lock_client.h"
 #include "lock_client_cache_rsm.h"
 #include <sstream>
 #include <iostream>
@@ -15,7 +14,7 @@
 
 yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
 {
-  ec = new extent_client(extent_dst);
+  ec = new extent_client();
   lc = new lock_client_cache_rsm(lock_dst, ec);
   srand(getpid());
 }
@@ -38,7 +37,7 @@ yfs_client::newinum(bool is_file)
   while (true) {
     if (is_file) i = (rand() | 0x80000000) & 0xffffffff;
     else i = rand() & 0x7fffffff;
-    lc->acquire(i);
+    lc->acquire(i, lock_protocol::WRITE);
     // if (i && ec->get(i, nouse) != extent_protocol::OK) {
     if (i) {
       ec->put(i, "");
@@ -60,7 +59,7 @@ yfs_client::addfile(inum parent, std::string name, bool is_file, inum &myinum)
   bool success = false;
   std::string contents;
   
-  lc->acquire(parent);
+  lc->acquire(parent, lock_protocol::WRITE);
   if (ec->get(parent, contents) == extent_protocol::OK) {
     std::istringstream is(contents);
     std::ostringstream os;
@@ -140,7 +139,7 @@ yfs_client::getfile(inum inum, fileinfo &fin)
   printf("getfile %016llx\n", inum);
   extent_protocol::attr a;
 
-  lc->acquire(inum);
+  lc->acquire(inum, lock_protocol::READ);
   if (ec->getattr(inum, a) != extent_protocol::OK) {
     r = IOERR;
     goto release;
@@ -166,7 +165,7 @@ yfs_client::getdir(inum inum, dirinfo &din)
   printf("getdir %016llx\n", inum);
   extent_protocol::attr a;
 
-  lc->acquire(inum);
+  lc->acquire(inum, lock_protocol::READ);
   if (ec->getattr(inum, a) != extent_protocol::OK) {
     r = IOERR;
     goto release;
@@ -187,7 +186,7 @@ yfs_client::lookup(inum parent, std::string name)
   std::string contents;
   inum i = 0; // All inode # > 0, so 0 represets file doesn't exist
 
-  lc->acquire(parent);
+  lc->acquire(parent, lock_protocol::READ);
   if (ec->get(parent, contents) == extent_protocol::OK) {
     std::istringstream is(contents);
     std::string line;
@@ -226,7 +225,7 @@ yfs_client::readdir(inum parent, std::vector<dirent> &children)
   std::string contents;
   status r = NOENT;
 
-  lc->acquire(parent);
+  lc->acquire(parent, lock_protocol::READ);
   if (ec->get(parent, contents) == extent_protocol::OK) {
     std::istringstream is(contents);
     std::string line;
@@ -257,7 +256,7 @@ yfs_client::setsize(inum file, off_t size)
   std::string contents;
   status r = NOENT;
 
-  lc->acquire(file);
+  lc->acquire(file, lock_protocol::WRITE);
   if (ec->get(file, contents) == extent_protocol::OK) {
     int len = contents.length();
 
@@ -282,7 +281,7 @@ yfs_client::read(inum file, std::string &buf, off_t offset, size_t nbytes, size_
   std::string contents;
   status r = NOENT;
 
-  lc->acquire(file);
+  lc->acquire(file, lock_protocol::READ);
   if (ec->get(file, contents) == extent_protocol::OK) {
     int len = contents.length();
     if (offset >= len) {
@@ -307,7 +306,7 @@ yfs_client::write(inum file, const char *buf, off_t offset, size_t nbytes, size_
   std::string contents;
   status r = NOENT;
 
-  lc->acquire(file);
+  lc->acquire(file, lock_protocol::WRITE);
   if (ec->get(file, contents) == extent_protocol::OK) {
     int len = contents.length();
     int end = offset + nbytes;
@@ -349,7 +348,7 @@ yfs_client::unlink(inum parent, std::string name)
   status r = NOENT;
   std::string contents;
   
-  lc->acquire(parent);
+  lc->acquire(parent, lock_protocol::WRITE);
   if (ec->get(parent, contents) == extent_protocol::OK) {
     std::istringstream is(contents);
     std::ostringstream os;
@@ -385,7 +384,7 @@ yfs_client::unlink(inum parent, std::string name)
 
     ec->put(parent, os.str());
 
-    lc->acquire(i);
+    lc->acquire(i, lock_protocol::WRITE);
     r = ec->remove(i) == extent_protocol:: OK ? OK : NOENT;
     lc->release(i);
   }

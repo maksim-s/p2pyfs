@@ -74,13 +74,15 @@ class lock_client_cache : public lock_client {
   cached_lock& get_lock(lock_protocol::lockid_t);
 
   // RPC requests to server
-  lock_protocol::status sacquire(lock_protocol::lockid_t, cached_lock&);
+  lock_protocol::status sacquire(lock_protocol::lockid_t, 
+				 lock_protocol::lock_type, cached_lock&);
   lock_protocol::status srelease(lock_protocol::lockid_t, cached_lock&);
 
  public:
   lock_client_cache(std::string xdst, class lock_release_user *l = 0);
   virtual ~lock_client_cache();
-  lock_protocol::status acquire(lock_protocol::lockid_t);
+  lock_protocol::status acquire(lock_protocol::lockid_t, 
+				lock_protocol::lock_type type);
   lock_protocol::status release(lock_protocol::lockid_t);
   rlock_protocol::status revoke_handler(lock_protocol::lockid_t, 
                                         int &);

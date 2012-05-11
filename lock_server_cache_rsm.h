@@ -13,10 +13,12 @@ class cachable_lock_rsm {
  public:
   pthread_mutex_t m;
   std::string owner;
+  std::set<std::string> copyset;
   std::set<std::string> waiters;
-  bool revoking;
-  int nacquire;
-  std::map<std::string, lock_protocol::xid_t> seq;
+  std::string fowner;
+  lock_protocol::lock_type type;
+  lock_protocol::lock_type ftype;
+  std::map<std::string, lock_protocol::xid_t> xids;
   cachable_lock_rsm();
   ~cachable_lock_rsm();
 };
@@ -26,27 +28,34 @@ class lock_server_cache_rsm : public rsm_state_transfer {
   class rsm *rsm;
   std::map<lock_protocol::lockid_t, cachable_lock_rsm> lockset;
   std::set<lock_protocol::lockid_t> revokeset;
-  std::set<lock_protocol::lockid_t> releasedset;
+  std::set<lock_protocol::lockid_t> transferset;
+  std::set<lock_protocol::lockid_t> retryset;
 
   pthread_mutex_t m;
-  pthread_cond_t revoke_cv;
-  pthread_cond_t retry_cv;
+  pthread_cond_t revoker_cv;
+  pthread_cond_t transferer_cv;
+  pthread_cond_t retryer_cv;
+
+  std::string es;
 
   cachable_lock_rsm& get_lock(lock_protocol::lockid_t);
-  void revoke(lock_protocol::lockid_t, cachable_lock_rsm &);
 
  public:
-  lock_server_cache_rsm(class rsm *rsm = 0);
+  lock_server_cache_rsm(class rsm *rsm = 0, std::string _es = "");
   ~lock_server_cache_rsm();
   lock_protocol::status stat(lock_protocol::lockid_t, int &);
   void revoker();
+  void transferer();
   void retryer();
+
   std::string marshal_state();
   void unmarshal_state(std::string state);
-  int acquire(lock_protocol::lockid_t, std::string id, 
+  int acquire(lock_protocol::lockid_t, std::string id, unsigned int,
 	      lock_protocol::xid_t, int &);
   int release(lock_protocol::lockid_t, std::string id, lock_protocol::xid_t,
 	      int &);
+  int ack(lock_protocol::lockid_t, std::string id, lock_protocol::xid_t,
+	  int &);
 };
 
 #endif

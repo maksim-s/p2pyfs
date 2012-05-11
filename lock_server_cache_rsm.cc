@@ -12,8 +12,8 @@
 cachable_lock_rsm::cachable_lock_rsm()
 {
   pthread_mutex_init(&m, NULL);
-  nacquire = 0;
-  owner = "";
+  owner = fowner = "";
+  type = ftype = lock_protocol::UNUSED;
 }
 
 cachable_lock_rsm::~cachable_lock_rsm() 
@@ -30,6 +30,14 @@ revokethread(void *x)
 }
 
 static void *
+transferthread(void *x)
+{
+  lock_server_cache_rsm *sc = (lock_server_cache_rsm *) x;
+  sc->transferer();
+  return 0;
+}
+
+static void *
 retrythread(void *x)
 {
   lock_server_cache_rsm *sc = (lock_server_cache_rsm *) x;
@@ -37,26 +45,32 @@ retrythread(void *x)
   return 0;
 }
 
-lock_server_cache_rsm::lock_server_cache_rsm(class rsm *_rsm) 
+lock_server_cache_rsm::lock_server_cache_rsm(class rsm *_rsm, std::string _es) 
   : rsm (_rsm)
 {
   pthread_mutex_init(&m, NULL);
-  pthread_cond_init(&revoke_cv, NULL);
-  pthread_cond_init(&retry_cv, NULL);
+  pthread_cond_init(&revoker_cv, NULL);
+  pthread_cond_init(&transferer_cv, NULL);
+  pthread_cond_init(&retryer_cv, NULL);
   rsm = _rsm;
+  es = _es;
   rsm->set_state_transfer(this);
   pthread_t th;
   int r = pthread_create(&th, NULL, &revokethread, (void *) this);
   VERIFY (r == 0);
+  r = pthread_create(&th, NULL, &transferthread, (void *) this);
+  VERIFY (r == 0);
   r = pthread_create(&th, NULL, &retrythread, (void *) this);
   VERIFY (r == 0);
+  
 }
 
 lock_server_cache_rsm::~lock_server_cache_rsm()
 {
   pthread_mutex_destroy(&m);
-  pthread_cond_destroy(&revoke_cv);
-  pthread_cond_destroy(&retry_cv);
+  pthread_cond_destroy(&revoker_cv);
+  pthread_cond_destroy(&transferer_cv);
+  pthread_cond_destroy(&retryer_cv);
 }
 
 cachable_lock_rsm&
@@ -67,32 +81,13 @@ lock_server_cache_rsm::get_lock(lock_protocol::lockid_t lid)
 }
 
 void
-lock_server_cache_rsm::revoke(lock_protocol::lockid_t lid, 
-			      cachable_lock_rsm &clck)
-{
-  printf("revoke %llu\n", lid);
-  pthread_mutex_lock(&m);
-  printf("revoke inserting %llu to revokeset\n", lid);
-  revokeset.insert(lid);
-  pthread_cond_broadcast(&revoke_cv);
-  pthread_mutex_unlock(&m);
-}
-
-void
 lock_server_cache_rsm::revoker()
 {
-
-  // This method should be a continuous loop, that sends revoke
-  // messages to lock holders whenever another client wants the
-  // same lock
   while (true) {
-    printf("revoker firing up!\n");
     // Get first revoke request
     pthread_mutex_lock(&m);
     while(revokeset.empty()) {
-      printf("revoker sleeping! [%d]\n", revokeset.size());
-      pthread_cond_wait(&revoke_cv, &m);
-      printf("revoker waking up! [%d]\n", revokeset.size());
+      pthread_cond_wait(&revoker_cv, &m);
     }
     lock_protocol::lockid_t lid = *revokeset.begin();
     revokeset.erase(lid);
@@ -100,26 +95,86 @@ lock_server_cache_rsm::revoker()
 
     cachable_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
-    std::string clt = clck.owner;
-    printf("revoker [%s] %llu\n", clt.c_str(), lid);
-    bool revoke = clck.owner.length() > 0 && clck.waiters.size() > 0;
+    printf("revoker [%s] %llu\n", clck.owner.c_str(), lid);
+    bool revoke = clck.fowner.length() > 0 
+      && clck.ftype == lock_protocol::WRITE;
+    std::set<std::string> copyset = clck.copyset;
     pthread_mutex_unlock(&clck.m);
 
     if (!rsm->amiprimary() || !revoke) {
       continue;
     }
 
-    printf("revoker sending revoke now [%s] %llu\n", clt.c_str(), lid);
+    std::set<std::string>::iterator it;
+    for(it = copyset.begin(); it != copyset.end(); it++) {
+      pthread_mutex_lock(&clck.m);
+      lock_protocol::xid_t xid = clck.xids[*it];
+      pthread_mutex_unlock(&clck.m);
+
+      handle h(*it);
+      rpcc *cl = h.safebind();
+      int r, ret;
+      if (cl) {
+	r = cl->call(rlock_protocol::revoke, lid, xid, ret);
+	assert(r == rlock_protocol::OK);
+      }
+      else {
+	printf("revoker [%s] bind failed!\n", (*it).c_str());
+      }
+    }
+    pthread_mutex_lock(&clck.m);
+    assert(copyset.size() >= clck.copyset.size());
+    for (it = clck.copyset.begin(); it != clck.copyset.end(); it++) {
+      assert(copyset.count(*it) == 1);
+    }
+    pthread_mutex_unlock(&clck.m);
+  }
+}
+
+void
+lock_server_cache_rsm::transferer()
+{
+  while(true) {
+    pthread_mutex_lock(&m);
+    while(transferset.empty()) {
+      pthread_cond_wait(&transferer_cv, &m);
+    }
+    lock_protocol::lockid_t lid = *transferset.begin();
+    transferset.erase(lid);
+    pthread_mutex_unlock(&m);
+    cachable_lock_rsm &clck = get_lock(lid);
+    bool transfer = clck.fowner.length() > 0;
+    pthread_mutex_lock(&clck.m);
+    std::string clt;
+    if (clck.owner.length() == 0) {
+      clt = es;
+    } else {
+      clt = clck.owner;
+    }
+    printf("transferer [%s] %llu\n", clt.c_str(), lid);
+    lock_protocol::xid_t xid = clck.xids[clt];
+    std::string rid = clck.fowner;
+    lock_protocol::xid_t rxid = clck.xids[rid];
+    unsigned int rtype = (unsigned int) clck.ftype;
+    pthread_mutex_unlock(&clck.m);
+
+    if (!rsm->amiprimary() || !transfer) {
+      continue;
+    }
+
+    printf("transferer sending transfer now [%s] %llu\n", clt.c_str(), lid);
 
     handle h(clt);
     rpcc *cl = h.safebind();
     int r, ret;
     if (cl) {
-      r = cl->call(rlock_protocol::revoke, lid, clck.seq[clt], ret);
+      std::string fowner = clck.fowner;
+      r = cl->call(rlock_protocol::transfer, lid, xid,
+		   rtype, rid, rxid, ret);
       assert(r == rlock_protocol::OK);
     }
     else {
-      printf("revoker [%s] bind failed!\n", clt.c_str());
+      printf("transferer [%s] bind failed!\n", clt.c_str());
     }
   }
 }
@@ -127,27 +182,20 @@ lock_server_cache_rsm::revoker()
 void
 lock_server_cache_rsm::retryer()
 {
-  // This method should be a continuous loop, waiting for locks
-  // to be released and then sending retry messages to those who
-  // are waiting for it.
   while (true) {
-    printf("retryer firing up! [%d]\n", releasedset.size());
     pthread_mutex_lock(&m);
-    while(releasedset.empty()) {
-      printf("retryer sleeping! [%d]\n", releasedset.size());
-      pthread_cond_wait(&retry_cv, &m);
-      printf("retryer waking up! [%d]\n", releasedset.size());
+    while(retryset.empty()) {
+      pthread_cond_wait(&retryer_cv, &m);
     }
-    lock_protocol::lockid_t lid = *releasedset.begin();
-    releasedset.erase(lid);
+    lock_protocol::lockid_t lid = *retryset.begin();
+    retryset.erase(lid);
     pthread_mutex_unlock(&m);
-
-    printf("retryer next round! [%d]\n", releasedset.size());
     cachable_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
     bool retry = clck.waiters.size() > 0;
     // Pick next client to 'retry'
     std::string clt = *clck.waiters.begin();
+    lock_protocol::xid_t xid = clck.xids[clt];
     printf("retryer [%s] %llu\n", clt.c_str(), lid);
     pthread_mutex_unlock(&clck.m);
 
@@ -161,7 +209,7 @@ lock_server_cache_rsm::retryer()
     rpcc *cl = h.safebind();
     int r, ret;
     if (cl) {
-      r = cl->call(rlock_protocol::retry, lid, clck.seq[clt], ret);
+      r = cl->call(rlock_protocol::retry, lid, xid, ret);
       assert(r == rlock_protocol::OK);
     }
     else {
@@ -171,56 +219,88 @@ lock_server_cache_rsm::retryer()
 }
 
 int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
+				   unsigned int t, 
 				   lock_protocol::xid_t xid, int &)
 {
   lock_protocol::status r;
+  lock_protocol::lock_type type = (lock_protocol::lock_type) t;
+  assert(type != lock_protocol::UNUSED);
   cachable_lock_rsm &clck = get_lock(lid);
 
   pthread_mutex_lock(&clck.m);
-  printf("acquire %llu [%s] W[%d]\n", lid, id.c_str(), clck.waiters.size()); 
-  if (xid < clck.seq[id]) {
+  printf("acquire %llu, %d [%s] [%llu, %llu]\n", lid, t, id.c_str(), 
+	 xid, clck.xids[id]); 
+  if (xid < clck.xids[id]) {
     r = lock_protocol::RPCERR;
-  }
-  else if (clck.owner == id && clck.seq[id] == xid) {
-    printf("acquire %llu [%s] granting old request W[%d]\n", lid, id.c_str(),
-	   clck.waiters.size());
-    // If client resends request due to primary failure
-    r = lock_protocol::OK;
-    if (clck.waiters.size() > 0) {
-      pthread_mutex_unlock(&clck.m);
-      // More clients waiting so also send revoke
-      revoke(lid, clck);
-      goto end;
-    }
-  }
-  else if (clck.owner.length() == 0) { 
-    // No owner
-    clck.owner = id;
-    clck.seq[id] = xid;
-    clck.waiters.erase(id);
-    printf("acquire %llu [%s] granting lock W[%d]\n", lid, id.c_str(),
-	   clck.waiters.size());
-    r = lock_protocol::OK;
-    if (clck.waiters.size() > 0) {
-      // More clients waiting so also send revoke
-      pthread_mutex_unlock(&clck.m);
-      revoke(lid, clck);
-      goto end;
-    }
-  }
-  else {
-    // Owned by some client already
-    assert(clck.owner != id); // Owner shouldn't do acquire again
-    clck.waiters.insert(id);
-    printf("acquire %llu [%s] Adding to waiters W[%d]\n", lid, id.c_str(),
-	   clck.waiters.size());
-    clck.seq[id] = xid;
-    r = lock_protocol::RETRY;
     pthread_mutex_unlock(&clck.m);
-    revoke(lid, clck); 
     goto end;
   }
+  
+  if (xid == clck.xids[id]) {
+    if (type == clck.type) {
+      if (type == lock_protocol::WRITE) {
+	assert(clck.copyset.size() == 0);
+      }
+
+      if (clck.owner == id || clck.copyset.count(id) == 1) {
+	r = lock_protocol::OK;
+	if (clck.waiters.size() > 0) {
+	  pthread_mutex_unlock(&clck.m);
+	  pthread_mutex_lock(&m);
+	  retryset.insert(lid);
+	  pthread_cond_signal(&retryer_cv);
+	  pthread_mutex_unlock(&m);
+	}
+	else {
+	  pthread_mutex_unlock(&clck.m);
+	}
+	goto end;
+      }
+    }
+  }
+
+  clck.xids[id] = xid;
+
+  if (clck.fowner.length() != 0) {
+    clck.waiters.insert(id);
+    r = lock_protocol::RETRY;
+    pthread_mutex_unlock(&clck.m);
+    goto end;    
+  }
+
+  // No owner or fowner!
+  if (clck.owner.length() == 0) {
+    assert(clck.copyset.size() == 0);
+    clck.fowner = id;
+    clck.ftype = type;
+    r = lock_protocol::OK;
+    pthread_mutex_unlock(&clck.m);
+    // transferer will figure out that need to send from ES
+    pthread_mutex_lock(&m);
+    transferset.insert(lid); 
+    pthread_cond_signal(&transferer_cv);
+    pthread_mutex_unlock(&m);
+    goto end;
+  }
+
+  clck.fowner = id;
+  clck.ftype = type;
+  r = lock_protocol::OK;
   pthread_mutex_unlock(&clck.m);
+
+  pthread_mutex_lock(&m);
+  if (type == lock_protocol::WRITE) {
+    // revoker will invalidate all copyset items
+    revokeset.insert(lid);
+    pthread_cond_signal(&revoker_cv);
+  }
+  else {
+    // transferer will figure out that need to send from owner
+    transferset.insert(lid);
+    pthread_cond_signal(&transferer_cv);
+  }
+  pthread_mutex_unlock(&m);
+
  end:
   return r;
 }
@@ -234,17 +314,16 @@ lock_server_cache_rsm::release(lock_protocol::lockid_t lid, std::string id,
 
   pthread_mutex_lock(&clck.m);
   printf("release %llu [%s] W[%d]\n", lid, id.c_str(), clck.waiters.size());
-  if (clck.seq[id] == xid) {
-    printf("release %llu [%s] O[%s]\n", lid, id.c_str(), clck.owner.c_str());
-    if (clck.owner == id) {
-      clck.owner = "";
-    }
-    int size = clck.waiters.size();
+  if (clck.xids[id] == xid) {
+    assert(clck.owner != id); // owner never sends release; its implicit in ack
+    clck.copyset.erase(id);
+    int size = clck.copyset.size();
     pthread_mutex_unlock(&clck.m);
-    if (size > 0) { // Add to released set and wake up retryer
+
+    if (size == 0) { // Invalidated all copset, add to transferer queue
       pthread_mutex_lock(&m);
-      releasedset.insert(lid);
-      pthread_cond_broadcast(&retry_cv);
+      transferset.insert(lid);
+      pthread_cond_broadcast(&transferer_cv);
       pthread_mutex_unlock(&m);
     }
     r = lock_protocol::OK;
@@ -258,101 +337,62 @@ lock_server_cache_rsm::release(lock_protocol::lockid_t lid, std::string id,
   return r;
 }
 
+int 
+lock_server_cache_rsm::ack(lock_protocol::lockid_t lid, std::string id, 
+			       lock_protocol::xid_t xid, int &ret)
+{
+  lock_protocol::status r;
+  cachable_lock_rsm &clck = get_lock(lid);
+
+  pthread_mutex_lock(&clck.m);
+  printf("ack %llu [%s] [%llu, %llu]\n", lid, id.c_str(), xid, clck.xids[id]);
+  if (clck.xids[id] == xid) {
+    if (clck.owner.length() == 0) {
+      assert(clck.copyset.size() == 0);
+      clck.owner = id;
+    }
+    else if (clck.ftype == lock_protocol::READ) {
+      clck.copyset.insert(id);
+    }
+    else {
+      assert(clck.copyset.size() == 0);
+      clck.owner = id;
+    }
+
+    clck.type = clck.ftype;
+    clck.ftype = lock_protocol::UNUSED;
+    clck.fowner = "";
+    int size = clck.waiters.size();
+    pthread_mutex_unlock(&clck.m);
+
+    if (size > 0) { // Process next waiter in line
+      pthread_mutex_lock(&m);
+      retryset.insert(lid);
+      pthread_cond_broadcast(&retryer_cv);
+      pthread_mutex_unlock(&m);
+    }
+    r = lock_protocol::OK;
+  }
+  else {
+    printf("ack %llu [%s] out-of-date request!\n", lid, id.c_str());
+    r = lock_protocol::RPCERR;
+    pthread_mutex_unlock(&clck.m);
+  }
+
+  return r;
+}
+
 std::string
 lock_server_cache_rsm::marshal_state()
 {
   ScopedLock ml(&m);
-  marshall rep;
-
-  std::map<lock_protocol::lockid_t, cachable_lock_rsm>::iterator lit;
-  rep << (unsigned int) lockset.size();
-  for (lit = lockset.begin(); lit != lockset.end(); lit++) {
-    rep << lit->first;
-    cachable_lock_rsm clck = lockset[lit->first];
-    pthread_mutex_lock(&clck.m);
-    rep << clck.owner;
-    std::set<std::string>::iterator wit;
-    rep << (unsigned int) clck.waiters.size();
-    for (wit = clck.waiters.begin(); wit != clck.waiters.end(); wit++) {
-      rep << *wit;
-    }
-    rep << clck.nacquire;
-    std::map<std::string, lock_protocol::xid_t>::iterator sit;
-    rep << (unsigned int) clck.seq.size();
-    for (sit = clck.seq.begin(); sit != clck.seq.end(); sit++) {
-      rep << sit->first;
-      rep << sit->second;
-    }
-    pthread_mutex_unlock(&clck.m);
-  }
-
-  std::set<lock_protocol::lockid_t>::iterator rit;
-  rep << (unsigned int) revokeset.size();
-  for (rit = revokeset.begin(); rit != revokeset.end(); rit++) {
-    rep << *rit;
-  }
-  rep << (unsigned int) releasedset.size();
-  for (rit = releasedset.begin(); rit != releasedset.end(); rit++) {
-    rep << *rit;
-  }
-
-  return rep.str();
+  return "";
 }
 
 void
 lock_server_cache_rsm::unmarshal_state(std::string state)
 {
   ScopedLock ml(&m);
-
-  lockset.clear();
-  revokeset.clear();
-  releasedset.clear();
-
-  unmarshall rep(state);
-  unsigned int lsetsize;
-  rep >> lsetsize;
-  for (unsigned int i = 0; i < lsetsize; i++) {
-    lock_protocol::lockid_t lid;
-    rep >> lid;
-    cachable_lock_rsm clck;
-    rep >> clck.owner;
-    unsigned int waitsize;
-    rep >> waitsize;
-    for (unsigned int i = 0; i < waitsize; i++) {
-      std::string w;
-      rep >> w;
-      clck.waiters.insert(w);
-    }
-    rep >> clck.nacquire;
-    unsigned int seqsize;
-    rep >> seqsize;
-    for (unsigned int i = 0; i < seqsize; i++) {
-      std::string clt;
-      lock_protocol::xid_t xid;
-      rep >> clt;
-      rep >> xid;
-      clck.seq[clt] = xid;
-    }
-    lockset[lid] = clck;
-  }
-
-  unsigned int rsize;
-  rep >> rsize;
-  for (unsigned int i = 0; i < rsize; i++) {
-    lock_protocol::lockid_t lid;
-    rep >> lid;
-    revokeset.insert(lid);
-  }
-
-  rep >> rsize;
-  for (unsigned int i = 0; i < rsize; i++) {
-    lock_protocol::lockid_t lid;
-    rep >> lid;
-    releasedset.insert(lid);
-  }
-
-  pthread_cond_broadcast(&revoke_cv);
-  pthread_cond_broadcast(&retry_cv);
 }
 
 lock_protocol::status

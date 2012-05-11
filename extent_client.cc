@@ -6,89 +6,71 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
+#include "marshall.h"
 
 extent::extent()
 {
   id = 0;
-  dirty = false;
-  removed = false;
 }
 
 extent::extent(extent_protocol::extentid_t eid)
 {
   id = eid;
-  dirty = false;
-  removed = false;
 }
 
-// The calls assume that the caller holds a lock on the extent
-
-extent_client::extent_client(std::string dst)
+extent_client::extent_client()
 {
-  sockaddr_in dstsock;
-  make_sockaddr(dst.c_str(), &dstsock);
-  cl = new rpcc(dstsock);
-  if (cl->bind() != 0) {
-    printf("extent_client: bind failed\n");
-  }
+  pthread_mutex_init(&m, NULL);
+  printf("extent size: %d\n", extentset.size());
+}
+
+extent_client::~extent_client()
+{
+  pthread_mutex_destroy(&m);
 }
 
 extent_protocol::status
 extent_client::get(extent_protocol::extentid_t eid, std::string &buf)
 {
+  extent_protocol::status r = extent_protocol::OK;
   printf("get %llu\n", eid);
-  extent_protocol::status ret = extent_protocol::NOENT;
   pthread_mutex_lock(&m);
   if (extentset.count(eid)) {
     extent &extent = extentset[eid];
-    if (extent.removed) goto release;
-    ret = extent_protocol::OK;
     buf = extent.data;
   }
   else {
-    ret = cl->call(extent_protocol::get, eid, buf);
-    if (ret != extent_protocol::OK) goto release;
-    extent &extent = extentset[eid];
-    ret = cl->call(extent_protocol::getattr, eid, extent.attr);
-    assert(ret == extent_protocol::OK);
-    extent.data = std::string(buf);
+    // Should this ever happen?
+    r = extent_protocol::NOENT;
   }
- release:
   pthread_mutex_unlock(&m);
-  return ret;
+  return r;
 }
 
 extent_protocol::status
 extent_client::getattr(extent_protocol::extentid_t eid, 
 		       extent_protocol::attr &attr)
 {
+  extent_protocol::status r = extent_protocol::OK;
   printf("getattr %llu\n", eid);
-  extent_protocol::status ret = extent_protocol::NOENT;
   pthread_mutex_lock(&m);
   if (extentset.count(eid)) {
     extent &extent = extentset[eid];
-    if (extent.removed) goto release;
-    ret = extent_protocol::OK;
     attr = extent.attr;
   }
   else {
-    extent &extent = extentset[eid];
-    ret = cl->call(extent_protocol::getattr, eid, extent.attr);
-    if (ret != extent_protocol::OK) goto release;
-    ret = cl->call(extent_protocol::get, eid, extent.data);
-    assert(ret == extent_protocol::OK);
-    attr = extent.attr;
+    // Should this ever happen?
+    r = extent_protocol::NOENT;
   }
- release:
   pthread_mutex_unlock(&m);
-  return ret;
+  return r;
 }
 
 extent_protocol::status
 extent_client::put(extent_protocol::extentid_t eid, std::string buf)
 {
+  extent_protocol::status r = extent_protocol::OK;
   printf("put %llu\n", eid);
-  extent_protocol::status ret = extent_protocol::OK;
   pthread_mutex_lock(&m);
   if (!extentset.count(eid)) {
     extentset[eid] = extent(eid);
@@ -98,46 +80,110 @@ extent_client::put(extent_protocol::extentid_t eid, std::string buf)
   time((time_t *) &extent.attr.atime);
   time((time_t *) &extent.attr.ctime);
   time((time_t *) &extent.attr.mtime);
-  extent.dirty = true;
+
+  if (eid & 0x80000000) { // is file?
+    extent.attr.size = buf.size();
+  }
+  else {
+    extent.attr.size = 4096; // Directory size
+  }
+
   pthread_mutex_unlock(&m);
-  return ret;
+  return r;
 }
 
 extent_protocol::status
 extent_client::remove(extent_protocol::extentid_t eid)
 {
-  extent_protocol::status ret = extent_protocol::OK;
+  extent_protocol::status r = extent_protocol::OK;
   pthread_mutex_lock(&m);
-  if (!extentset.count(eid)) {
-    extentset[eid] = extent(eid);
-  }
-  extent &extent = extentset[eid];
-  extent.removed = true;
+  extentset.erase(eid);
   pthread_mutex_unlock(&m);
-  return ret;
+  return r;
 }
 
 void 
 extent_client::flush(extent_protocol::extentid_t eid)
 {
-  int r, ret;
   pthread_mutex_lock(&m);
-  if (extentset.count(eid)) {
-    extent &extent = extentset[eid];
-    if (extent.removed) {
-      ret = cl->call(extent_protocol::remove, eid, r);
-    }
-    else if (extent.dirty) {
-      ret = cl->call(extent_protocol::put, eid, extent.data, r);
-    }
-  }
   extentset.erase(eid);
   pthread_mutex_unlock(&m);
 }
 
+void 
+extent_client::populate(extent_protocol::extentid_t eid, std::string data)
+{
+  printf("==> populate %llu data size: %d\n", eid, extentset.count(eid));
+  unmarshall rep(data);
+  pthread_mutex_lock(&m);
+  assert(extentset.count(eid) == 0);
+  bool ent;
+  rep >> ent;
+  if (ent) {
+    extentset[eid] = extent(eid);
+    extent &extent = extentset[eid];
+    rep >> extent.data;
+    rep >> extent.attr.atime;
+    rep >> extent.attr.mtime;
+    rep >> extent.attr.mtime;
+    rep >> extent.attr.size;
+    printf("==> populate %llu -> %s\n", eid, extent.data.c_str());
+  }
+  pthread_mutex_unlock(&m);
+}
 
+void 
+extent_client::fetch(extent_protocol::extentid_t eid, std::string &data)
+{
+  printf("==> fetch %llu\n", eid);
+  marshall rep;
+  pthread_mutex_lock(&m);
+  if (extentset.count(eid) != 0) {
+    rep << true;
+    extent &extent = extentset[eid];
+    rep << extent.data;
+    rep << extent.attr.atime;
+    rep << extent.attr.mtime;
+    rep << extent.attr.ctime;
+    rep << extent.attr.size;
+    printf("==> fetch %llu -> %s\n", eid, extent.data.c_str());
+  }
+  else {
+    rep << false;
+  }
+  pthread_mutex_unlock(&m);
+  data = rep.str();
+  printf("==> fetch %llu -> %d\n", eid, data.size());
+}
+
+void
+extent_client::evict(extent_protocol::extentid_t eid)
+{
+  if (extentset.count(eid) != 0) {
+    printf("==> evict %llu\n", eid);
+    extentset.erase(eid);
+  }
+}
 void 
 extent_client::dorelease(lock_protocol::lockid_t lid)
 {
   this->flush(lid);
+}
+
+void 
+extent_client::dopopulate(lock_protocol::lockid_t lid, std::string data)
+{
+  this->populate(lid, data);
+}
+
+void 
+extent_client::dofetch(lock_protocol::lockid_t lid, std::string &data)
+{
+  this->fetch(lid, data);
+}
+
+void 
+extent_client::doevict(lock_protocol::lockid_t lid)
+{
+  this->evict(lid);
 }

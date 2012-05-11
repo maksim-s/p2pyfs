@@ -133,7 +133,8 @@ lock_client_cache::get_lock(lock_protocol::lockid_t lid)
 
 // Assumes mutex held for cl
 lock_protocol::status
-lock_client_cache::sacquire(lock_protocol::lockid_t lid, cached_lock& clck)
+lock_client_cache::sacquire(lock_protocol::lockid_t lid, 
+			    lock_protocol::lock_type type,cached_lock& clck)
 {
   int ret, r;
   assert(clck.status() == cached_lock::ACQUIRING);
@@ -166,7 +167,8 @@ lock_client_cache::srelease(lock_protocol::lockid_t lid, cached_lock& clck)
 }
 
 lock_protocol::status
-lock_client_cache::acquire(lock_protocol::lockid_t lid)
+lock_client_cache::acquire(lock_protocol::lockid_t lid,
+			   lock_protocol::lock_type type)
 {
   int r;
   cached_lock &clck = get_lock(lid);
@@ -214,7 +216,8 @@ lock_client_cache::acquire(lock_protocol::lockid_t lid)
     // Don't own lock, ask server to grant ownership.
     printf("[%s] acquire -> %llu [NONE]\n", id.c_str(), lid);
     clck.set_status(cached_lock::ACQUIRING);
-    while ((r = sacquire(lid, clck)) == lock_protocol::RETRY) {
+    while ((r = sacquire(lid, lock_protocol::WRITE, clck)) == 
+	   lock_protocol::RETRY) {
       while (!clck.retry) {
 	pthread_cond_wait(&clck.retry_cv, &clck.m);
       }

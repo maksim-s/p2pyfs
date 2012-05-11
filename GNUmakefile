@@ -1,3 +1,4 @@
+
 LAB=7
 SOL=0
 RPC=./rpc
@@ -40,7 +41,7 @@ lab4: yfs_client extent_server lock_server lock_tester test-lab-3-b\
 	 test-lab-3-c
 lab5: yfs_client extent_server lock_server test-lab-3-b test-lab-3-c
 lab6: lock_server rsm_tester
-lab7: extent_server lock_tester lock_server rsm_tester yfs_client  test-lab-3-b test-lab-3-c
+lab7: lock_server rsm_tester yfs_client extent_server test-lab-3-b test-lab-3-c
 
 hfiles1=rpc/fifo.h rpc/connection.h rpc/rpc.h rpc/marshall.h rpc/method_thread.h\
 	rpc/thr_pool.h rpc/pollmgr.h rpc/jsl_log.h rpc/slock.h rpc/rpctest.cc\
@@ -98,7 +99,7 @@ ifeq ($(LAB4GE),1)
 endif
 yfs_client : $(patsubst %.cc,%.o,$(yfs_client)) rpc/librpc.a
 
-extent_server=extent_server.cc extent_smain.cc
+extent_server=extent_server.cc extent_smain.cc handle.cc
 extent_server : $(patsubst %.cc,%.o,$(extent_server)) rpc/librpc.a
 
 test-lab-3-b=test-lab-3-b.c

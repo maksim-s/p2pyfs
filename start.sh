@@ -41,7 +41,7 @@ if [ $NUM_LS -gt 1 ]; then
     done
 else
     echo "starting ./lock_server $LOCK_PORT > lock_server.log 2>&1 &"
-    ./lock_server $LOCK_PORT $LOCK_PORT > lock_server.log 2>&1 &
+    ./lock_server $LOCK_PORT $LOCK_PORT $EXTENT_PORT > lock_server.log 2>&1 &
     sleep 1
 fi
 
@@ -50,7 +50,7 @@ unset RPC_LOSSY
 echo "starting ./extent_server $EXTENT_PORT > extent_server.log 2>&1 &"
 ./extent_server $EXTENT_PORT > extent_server.log 2>&1 &
 sleep 1
-
+echo "starting clients..."
 rm -rf $YFSDIR1
 mkdir $YFSDIR1 || exit 1
 sleep 1

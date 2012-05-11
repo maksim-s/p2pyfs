@@ -7,6 +7,8 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include "handle.h"
+#include "marshall.h"
 
 extent::extent() {
   time_t t = time(NULL);
@@ -14,105 +16,94 @@ extent::extent() {
   attr.mtime = t;
   attr.ctime = t;
   attr.size = 0;
+  contents = "";
 }
 
-extent_server::extent_server() {
-  int useless;
-  pthread_mutex_init(&m_extentset, NULL);
-  // Create empty root dir entry on startup 
-  put(0x1, "", useless); 
+static void *
+transferthread(void *x)
+{
+  extent_server *cc = (extent_server *) x;
+  cc->transferer();
+  return 0;
 }
+
+
+int extent_server::last_port = 0;
+extent_server::extent_server() {
+  pthread_cond_init(&transferer_cv, NULL);
+  pthread_mutex_init(&m, NULL);
+  pthread_t th;
+  int r = pthread_create(&th, NULL, &transferthread, (void *) this);
+  VERIFY (r == 0);  
+}
+
 
 extent_server::~extent_server()
 {
-  pthread_mutex_destroy(&m_extentset);
+  pthread_mutex_destroy(&m);
+  pthread_cond_destroy(&transferer_cv);
 }
 
-
-bool extent_server::isfile(extent_protocol::extentid_t id) {
-  if (id & 0x80000000) {
-    return true;
-  }
-  return false;
-}
-
-int extent_server::put(extent_protocol::extentid_t id, std::string buf, int &)
+void extent_server::transferer()
 {
-  printf("extent_server::put %llu->%s\n", id, buf.c_str()); 
-  // You fill this in for Lab 2.
-  int r = extent_protocol::OK;
-  extent *extent = NULL;
-  pthread_mutex_lock(&m_extentset);
-  extent = &extentset[id];
-  pthread_mutex_unlock(&m_extentset);
+ while (true) {
+    pthread_mutex_lock(&m);
+    while (transferset.empty()) {
+      pthread_cond_wait(&transferer_cv, &m);
+    }
+    extent_protocol::extentid_t eid;
+    std::map<extent_protocol::extentid_t, struct transfer_t>::iterator it;
+    it = transferset.begin();
+    struct transfer_t t = it->second;
+    eid = it->first;
+    transferset.erase(it); // Remove from set
+    pthread_mutex_unlock(&m);
+    printf("[%s] transferer -> %llu, %s\n", id.c_str(), eid, t.rid.c_str());
 
-  time_t t = time(NULL);
-  extent->attr.atime = t;
-  extent->attr.mtime = t;
-  extent->attr.ctime = t;
-
-  if (isfile(id)) {
-    extent->attr.size = buf.size();
+    handle h(t.rid);
+    rpcc *cl = h.safebind();
+    if (cl) {
+      int ret;
+      extent e = extent();
+      std::string data;
+      marshall rep;
+      rep << true;
+      rep << e.contents;
+      rep << e.attr.atime;
+      rep << e.attr.mtime;
+      rep << e.attr.ctime;
+      rep << e.attr.size;
+      data = rep.str();
+      int r = cl->call(clock_protocol::receive, eid, t.rxid, data, ret);
+      assert(r == clock_protocol::OK);
+      printf("[%s] transferer done -> %llu, %s\n", id.c_str(), eid, 
+	     t.rid.c_str());
+    }
+    else {
+      printf("[%s] transferer -> %llu, %s failure!\n", id.c_str(), eid, 
+	     t.rid.c_str());
+    }
   }
-  else {
-    extent->attr.size = 4096; // Directory size
-  }
+}
 
-  extent->contents = buf;
-
+rlock_protocol::status
+extent_server::transfer_handler(extent_protocol::extentid_t eid, 
+				lock_protocol::xid_t xid, 
+				unsigned int rtype,
+				std::string rid, 
+				lock_protocol::xid_t rxid,
+				int &)
+{
+  int r = rlock_protocol::OK;
+  printf("[%s] transfer_handler -> %llu, %d, %s\n", id.c_str(), eid, rtype, 
+	 rid.c_str());
+  pthread_mutex_lock(&m);
+  struct transfer_t t;
+  t.rid = rid;
+  t.rxid = rxid;
+  t.rtype = (lock_protocol::lock_type) rtype;
+  transferset[eid] = t;
+  pthread_cond_signal(&transferer_cv); // At most one thread waiting
+  pthread_mutex_unlock(&m);
   return r;
-}
-
-int extent_server::get(extent_protocol::extentid_t id, std::string &buf)
-{
-  printf("extent_server::get %llu\n", id);
-  // You fill this in for Lab 2.
-  int r = extent_protocol::NOENT;
-  extent *extent = NULL;
-  pthread_mutex_lock(&m_extentset);
-  if (extentset.count(id)) extent = &extentset[id];
-  pthread_mutex_unlock(&m_extentset);
-
-  if (extent) {
-    r = extent_protocol::OK;
-    time_t t = time(NULL);
-    extent->attr.atime = t;
-    buf = extent->contents;
-  }
-
-  return r;
-}
-
-int extent_server::getattr(extent_protocol::extentid_t id, extent_protocol::attr &a)
-{
-  printf("extent_server::getattr %llu\n", id);
-  // You fill this in for Lab 2.
-  // You replace this with a real implementation. We send a phony response
-  // for now because it's difficult to get FUSE to do anything (including
-  // unmount) if getattr fails.
-  int r = extent_protocol::NOENT;
-  extent *extent = NULL;
-  pthread_mutex_lock(&m_extentset);
-  if (extentset.count(id)) extent = &extentset[id];
-  pthread_mutex_unlock(&m_extentset);
-
-  if (extent) {
-    r = extent_protocol::OK;
-    a.size = extent->attr.size;
-    a.atime = extent->attr.atime;
-    a.ctime = extent->attr.ctime;
-    a.mtime = extent->attr.mtime;
-  }
-
-  return r;
-}
-
-int extent_server::remove(extent_protocol::extentid_t id, int &)
-{
-  printf("extent_server::remove %llu\n", id);
-  // You fill this in for Lab 2.
-  pthread_mutex_lock(&m_extentset);
-  int removed = extentset.erase(id);
-  pthread_mutex_unlock(&m_extentset);
-  return removed ? extent_protocol::OK : extent_protocol::NOENT;
 }
