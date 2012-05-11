@@ -21,7 +21,7 @@ cached_lock_rsm::cached_lock_rsm()
   pthread_cond_init(&none_cv, NULL);
 
   _status = NONE;
-  retried = received = false;
+  acquired = retried = received = false;
   sxid = cxid = 0;
   otype = stype = lock_protocol::UNUSED;
 }
@@ -161,6 +161,15 @@ lock_client_cache_rsm::revoker()
     cached_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
 
+    // Must have completed acquire flow
+    if (!clck.acquired) {
+      pthread_mutex_unlock(&clck.m);
+      pthread_mutex_lock(&m);
+      revokeset[lid]++;
+      pthread_mutex_unlock(&m);
+      continue;
+    }
+
     while(true) {
       if (clck.status() == cached_lock_rsm::ACQUIRING) {
 	// The second acquire in flight MUST be WRITE
@@ -180,7 +189,7 @@ lock_client_cache_rsm::revoker()
 
   next:
     assert(clck.owners.size() == 0 && clck.otype == lock_protocol::UNUSED);
-    printf("[%s] releaser -> %llu\n", id.c_str(), lid);
+    tprintf("[%s] releaser -> %llu\n", id.c_str(), lid);
     int r = srelease(lid, clck);
     assert(r == lock_protocol::OK); 
 
@@ -213,6 +222,15 @@ lock_client_cache_rsm::transferer()
     cached_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
 
+    // Must have completed acquire flow
+    if (!clck.acquired) {
+      pthread_mutex_unlock(&clck.m);
+      pthread_mutex_lock(&m);
+      transferset[lid] = t;
+      pthread_mutex_unlock(&m);
+      continue;
+    }
+
     while(true) {
       if (clck.status() == cached_lock_rsm::ACQUIRING) {
 	// The second acquire in flight MUST be WRITE
@@ -230,7 +248,7 @@ lock_client_cache_rsm::transferer()
 
   next:
     assert(clck.owners.size() == 0 && clck.otype == lock_protocol::UNUSED);
-    printf("[%s] transferer -> %llu, %s\n", id.c_str(), lid, t.rid.c_str());
+    tprintf("[%s] transferer -> %llu, %s\n", id.c_str(), lid, t.rid.c_str());
     handle h(t.rid);
     rpcc *cl = h.safebind();
     if (cl) {
@@ -242,20 +260,20 @@ lock_client_cache_rsm::transferer()
 
       // Evict before sending? Won't work in failure case.
       if (t.rtype == lock_protocol::WRITE) {
-	printf("[%s] transferer -> %llu revoking!\n", id.c_str(), lid);
+	tprintf("[%s] transferer -> %llu evicting!\n", id.c_str(), lid);
 	if (lu) {
 	  lu->doevict(lid);
 	}
       }
       
-      printf("[%s] transferer -> %llu, %d\n", id.c_str(), lid, data.size());
+      tprintf("[%s] transferer -> %llu, {%d}\n", id.c_str(), lid, data.size());
       pthread_mutex_unlock(&clck.m);
       int r = cl->call(clock_protocol::receive, lid, t.rxid, data, ret);
       pthread_mutex_lock(&clck.m);
       assert(r == clock_protocol::OK);
     }
     else {
-      printf("[%s] transferer -> %llu, %s failure!\n", id.c_str(), lid, 
+      tprintf("[%s] transferer -> %llu, %s failure!\n", id.c_str(), lid, 
 	     t.rid.c_str());
     }
 
@@ -278,10 +296,10 @@ void
 lock_client_cache_rsm::acker()
 {
   while (true) {
-    printf("[%s] acker -> Starting loop...\n", id.c_str());
+    tprintf("[%s] acker -> Starting loop...\n", id.c_str());
     pthread_mutex_lock(&m);
     while (ackset.empty()) {
-      printf("[%s] acker -> Wait empty...\n", id.c_str());
+      tprintf("[%s] acker -> Wait empty...\n", id.c_str());
       pthread_cond_wait(&acker_cv, &m);
     }
     lock_protocol::lockid_t lid;
@@ -291,19 +309,25 @@ lock_client_cache_rsm::acker()
     lid = it->first;
     ackset.erase(it); // Remove from set
     pthread_mutex_unlock(&m);
-    printf("[%s] acker -> %llu Preparing to send ack!\n", id.c_str(), lid);
+    tprintf("[%s] acker -> %llu Preparing to send ack!\n", id.c_str(), lid);
 
     cached_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
     assert(clck.status() == cached_lock_rsm::ACQUIRING);
 
-    printf("[%s] acker -> %llu\n", id.c_str(), lid);
+    tprintf("[%s] acker -> %llu\n", id.c_str(), lid);
+    // Must do here as can receive xfer, revoke before acquire flow finishes
+    clck.sxid = clck.cxid;
+    // to identify xfer, revoke requests before complete acquire flow
+    clck.acquired = false; 
+ 
     int r = sack(lid, clck);
     assert(r == lock_protocol::OK); 
 
     clck.received = true;
     pthread_cond_signal(&clck.receive_cv);
     pthread_mutex_unlock(&clck.m);
+    tprintf("[%s] acker -> finished %llu\n", id.c_str(), lid);
   }
 }
 
@@ -325,7 +349,7 @@ lock_client_cache_rsm::sacquire(lock_protocol::lockid_t lid,
   clck.retried = false; // No retry message for server received for this call
   clck.received = false;
   clck.cxid = xid;
-  printf("[%s] sacquire -> %llu, %d [%d, %llu]\n", id.c_str(), lid, 
+  tprintf("[%s] sacquire -> %llu, %d [%d, %llu]\n", id.c_str(), lid, 
 	 type, clck.status(), xid);
   pthread_mutex_unlock(&clck.m);
   r = rsmc->call(lock_protocol::acquire, lid, id, 
@@ -347,13 +371,13 @@ lock_client_cache_rsm::srelease(lock_protocol::lockid_t lid,
 	  clck.stype == lock_protocol::WRITE));
   // No local guy should be owning the lock, however!
   assert(clck.otype == lock_protocol::UNUSED && clck.owners.size() == 0);
-  printf("[%s] srelease -> %llu\n", id.c_str(), lid);
+  tprintf("[%s] srelease -> %llu\n", id.c_str(), lid);
   if (lu) {
     lu->dorelease(lid);
   }
   pthread_mutex_unlock(&clck.m);
   // TODO cxid/sxid
-  r = rsmc->call(lock_protocol::release, lid, id, clck.cxid, ret);
+  r = rsmc->call(lock_protocol::release, lid, id, clck.sxid, ret);
   pthread_mutex_lock(&clck.m);
   return r;
 }
@@ -367,7 +391,7 @@ lock_client_cache_rsm::sack(lock_protocol::lockid_t lid,
   assert(clck.status() == cached_lock_rsm::ACQUIRING);
   // No local guy should be owning the lock, however!
   assert(clck.otype == lock_protocol::UNUSED && clck.owners.size() == 0);
-  printf("[%s] sack -> %llu\n", id.c_str(), lid);
+  tprintf("[%s] sack -> %llu\n", id.c_str(), lid);
   pthread_mutex_unlock(&clck.m);
   r = rsmc->call(lock_protocol::ack, lid, id, clck.cxid, ret);
   pthread_mutex_lock(&clck.m);
@@ -387,14 +411,14 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
 
   cached_lock_rsm &clck = get_lock(lid);
 
-  printf("[%s] acquire -> %llu, %d\n", id.c_str(), lid, type);
+  tprintf("[%s] acquire -> %llu, %d\n", id.c_str(), lid, type);
 
   pthread_mutex_lock(&clck.m);
  start:
   switch(clck.status()) {
   case cached_lock_rsm::ACQUIRING:
     // Some other thread has already sent out request to server
-    printf("[%s] acquire -> %llu, %d [ACQUIRING]\n", id.c_str(), lid, type);
+    tprintf("[%s] acquire -> %llu, %d [ACQUIRING]\n", id.c_str(), lid, type);
     while (clck.status() == cached_lock_rsm::ACQUIRING) {
       if (type == lock_protocol::READ) {
 	pthread_cond_wait(&clck.readfree_cv, &clck.m);
@@ -408,7 +432,7 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     goto start;
   case cached_lock_rsm::LOCKED:
     // Own lock, but someother thread using it.
-    printf("[%s] acquire -> %llu, %d [LOCKED]\n", id.c_str(), lid, type);
+    tprintf("[%s] acquire -> %llu, %d [LOCKED]\n", id.c_str(), lid, type);
     assert(clck.otype != lock_protocol::UNUSED);
     assert(clck.owners.size() > 0);
 
@@ -428,7 +452,7 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     goto start;
   case cached_lock_rsm::FREE:
     // We own lock, and no one is using it.
-    printf("[%s] acquire -> %llu, %d [FREE]\n", id.c_str(), lid, type);
+    tprintf("[%s] acquire -> %llu, %d [FREE]\n", id.c_str(), lid, type);
     assert(clck.otype == lock_protocol::UNUSED);
     if (clck.stype == lock_protocol::WRITE || 
 	(clck.stype == lock_protocol::READ && type == lock_protocol::READ)) {
@@ -439,51 +463,54 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
       break;
     }
     else {
+      assert(type == lock_protocol::WRITE);
+      assert(clck.stype == lock_protocol::READ);
       goto sacquire; // Start acquire flow for WRITE
     }
   case cached_lock_rsm::REVOKING:
     // Release thread is releasing.
-    printf("[%s] acquire -> %llu, %d [REVOKING]\n", id.c_str(), lid, type);
+    tprintf("[%s] acquire -> %llu, %d [REVOKING]\n", id.c_str(), lid, type);
     while (clck.status() == cached_lock_rsm::REVOKING) {
       pthread_cond_wait(&clck.none_cv, &clck.m);
     }
     goto start;
   case cached_lock_rsm::NONE:
     // Don't own lock, ask server to grant ownership.
-    printf("[%s] acquire -> %llu, %d [NONE]\n", id.c_str(), lid, type);
+    tprintf("[%s] acquire -> %llu, %d [NONE]\n", id.c_str(), lid, type);
   sacquire:
     clck.set_status(cached_lock_rsm::ACQUIRING);
     clck.stype = type;
     while ((r = sacquire(lid, type, clck)) == lock_protocol::RETRY) {
-      printf("acquire NONE waiting for retry_cv\n");
-      pthread_cond_wait(&clck.retry_cv, &clck.m);
-      printf("acquire NONE waking up retry_cv\n");
-
+      tprintf("acquire %llu waiting for retry_cv\n", lid);
+      if (!clck.retried) {
+	pthread_cond_wait(&clck.retry_cv, &clck.m);
+      }
     }
-    clck.retried = true;
+
     assert(r == lock_protocol::OK);
 
-    printf("[%s] acquire -> %llu, %d Got OK from ls\n", id.c_str(), lid, type);
+    tprintf("[%s] acquire -> %llu, %d Got OK from ls {%d}\n", 
+	    id.c_str(), lid, type, clck.received);
 
     while (!clck.received) {
-      printf("[%s] acquire -> %llu, %d Waiting for receive\n", 
-	     id.c_str(), lid, type);
+      tprintf("[%s] acquire -> %llu, %d Waiting for receive {%d}\n", 
+	      id.c_str(), lid, type, clck.received);
       pthread_cond_wait(&clck.receive_cv, &clck.m);
     }
 
-    printf("[%s] acquire -> %llu, %d Got lock!\n", id.c_str(), lid, type);
+    tprintf("[%s] acquire -> %llu, %d Got lock!\n", id.c_str(), lid, type);
     // Now we have lock + data!
     assert(clck.stype == type);
     assert(clck.owners.size() == 0);
     clck.otype = type;
     clck.owners.insert(pthread_self());
-    clck.sxid = clck.cxid;
     clck.set_status(cached_lock_rsm::LOCKED);
     break;
   default:
     break;
   }
 
+  clck.acquired = true;
   pthread_mutex_unlock(&clck.m);
   return r;
 }
@@ -494,17 +521,17 @@ lock_client_cache_rsm::release(lock_protocol::lockid_t lid)
   int r;
   cached_lock_rsm &clck = get_lock(lid);
 
-  printf("[%s] release -> %llu\n", id.c_str(), lid);
+  tprintf("[%s] release -> %llu\n", id.c_str(), lid);
   pthread_mutex_lock(&clck.m);
 
   if (!clck.owners.count(pthread_self())) {    
-    printf("[%s] release -> %llu Non-owner!\n", id.c_str(), lid);
+    tprintf("[%s] release -> %llu Non-owner!\n", id.c_str(), lid);
     r = lock_protocol::NOENT;
     goto end;
   }
   
   if (clck.status() != cached_lock_rsm::LOCKED) {
-    printf("[%s] release -> %llu Not locked!\n", id.c_str(), lid);
+    tprintf("[%s] release -> %llu Not locked!\n", id.c_str(), lid);
     r = lock_protocol::NOENT;
     goto end;
   }
@@ -535,12 +562,11 @@ lock_client_cache_rsm::revoke_handler(lock_protocol::lockid_t lid,
   cached_lock_rsm &clck = get_lock(lid);
   pthread_mutex_lock(&clck.m);
   // TODO: Check sxid/cxid!
-  bool revoke = (clck.cxid == xid || clck.sxid == xid) 
-    && clck.status() != cached_lock_rsm::NONE;
+  bool revoke = clck.sxid == xid && clck.status() != cached_lock_rsm::NONE;
   pthread_mutex_unlock(&clck.m);
 
   if (revoke) {
-    printf("[%s] revoke_handler -> %llu\n", id.c_str(), lid);
+    tprintf("[%s] revoke_handler -> %llu\n", id.c_str(), lid);
     pthread_mutex_lock(&m);
     revokeset[lid]++;
     pthread_cond_signal(&revoker_cv); // At most one thread waiting
@@ -559,14 +585,17 @@ lock_client_cache_rsm::transfer_handler(lock_protocol::lockid_t lid,
 					int &)
 {
   int r = rlock_protocol::OK;
+  tprintf("[%s] transfer_handler -> %llu, %d, %s\n", id.c_str(), lid, rtype, 
+	   rid.c_str());
   cached_lock_rsm &clck = get_lock(lid);
   // TODO: Check sxid/cxid!
-  bool xfer = (clck.cxid == xid || clck.sxid == xid) 
-    && clck.status() != cached_lock_rsm::NONE;
+  pthread_mutex_lock(&clck.m);
+  bool xfer = clck.sxid == xid && clck.status() != cached_lock_rsm::NONE;
   pthread_mutex_unlock(&clck.m);
 
   if (xfer) {
-    printf("[%s] transfer_handler -> %llu, %d, %s\n", id.c_str(), lid, rtype, 
+    tprintf("[%s] transfer_handler xfer -> %llu, %d, %s\n", 
+	   id.c_str(), lid, rtype, 
 	   rid.c_str());
     pthread_mutex_lock(&m);
     struct transfer_t t;
@@ -577,8 +606,11 @@ lock_client_cache_rsm::transfer_handler(lock_protocol::lockid_t lid,
     pthread_cond_signal(&transferer_cv); // At most one thread waiting
     pthread_mutex_unlock(&m);
   }
-
-  pthread_mutex_unlock(&clck.m);
+  else {
+    tprintf("[%s] transfer_handler -> failed %llu, %d, %s\n", 
+	    id.c_str(), lid, rtype, 
+	    rid.c_str());
+  }
   return r;
 }
 
@@ -592,8 +624,9 @@ lock_client_cache_rsm::retry_handler(lock_protocol::lockid_t lid,
   pthread_mutex_lock(&clck.m);
   // Check cxid!
   if (clck.cxid != xid || clck.retried) goto end;
-  printf("[%s] retry_handler -> %llu\n", id.c_str(), lid);
+  tprintf("[%s] retry_handler -> %llu\n", id.c_str(), lid);
   assert(clck.status() == cached_lock_rsm::ACQUIRING); // Must be in acquiring
+  clck.retried = true;
   pthread_cond_signal(&clck.retry_cv); // At most one thread waiting
  end:
   pthread_mutex_unlock(&clck.m);
@@ -606,19 +639,17 @@ lock_client_cache_rsm::receive_handler(lock_protocol::lockid_t lid,
 				       std::string data, int &)
 {
   int r = rlock_protocol::OK;
-  printf("[%s] receive_handler -> %llu Getting clck\n", id.c_str(), lid);
   cached_lock_rsm &clck = get_lock(lid);
-  printf("[%s] receive_handler -> %llu Acquiring clck.m\n", id.c_str(), lid);
   pthread_mutex_lock(&clck.m);
-  printf("[%s] receive_handler -> %llu Got clck.m [%llu, %llu, %d]\n", \
+  tprintf("[%s] receive_handler -> %llu Got clck.m [%llu, %llu, %d]\n", \
 	 id.c_str(), lid, clck.cxid, xid, clck.received);
   // Check cxid!
   if (clck.cxid != xid || clck.received) {
     pthread_mutex_unlock(&clck.m);
     goto end;
   }
-  printf("[%s] receive_handler -> %llu Processing %d...\n", id.c_str(), lid,
-	 data.length());
+  tprintf("[%s] receive_handler -> %llu Processing {%d}...\n", id.c_str(), lid,
+	  data.length());
   assert(clck.status() == cached_lock_rsm::ACQUIRING); // Must be in acquiring
   if (lu) {
     lu->dopopulate(lid, data);
@@ -631,6 +662,6 @@ lock_client_cache_rsm::receive_handler(lock_protocol::lockid_t lid,
   pthread_mutex_unlock(&m);
 
  end:
-  printf("[%s] receive_handler -> %llu Returning...\n", id.c_str(), lid);
+  tprintf("[%s] receive_handler -> %llu Returning...\n", id.c_str(), lid);
   return r;
 }

@@ -95,10 +95,16 @@ lock_server_cache_rsm::revoker()
 
     cachable_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
-    printf("revoker [%s] %llu\n", clck.owner.c_str(), lid);
+    tprintf("revoker [%s] %llu {%s, %d}\n", clck.owner.c_str(), lid,
+	    clck.fowner.c_str(), clck.ftype);
     bool revoke = clck.fowner.length() > 0 
       && clck.ftype == lock_protocol::WRITE;
     std::set<std::string> copyset = clck.copyset;
+
+    tprintf("revoker [%s] %llu {%s, %d} [revoke %d] (size %d)\n", 
+	    clck.owner.c_str(), lid,
+	    clck.fowner.c_str(), clck.ftype,
+	    revoke, clck.copyset.size());
     pthread_mutex_unlock(&clck.m);
 
     if (!rsm->amiprimary() || !revoke) {
@@ -108,7 +114,7 @@ lock_server_cache_rsm::revoker()
     std::set<std::string>::iterator it;
     for(it = copyset.begin(); it != copyset.end(); it++) {
       pthread_mutex_lock(&clck.m);
-      lock_protocol::xid_t xid = clck.xids[*it];
+      lock_protocol::xid_t xid = clck.xids[*it].sxid;
       pthread_mutex_unlock(&clck.m);
 
       handle h(*it);
@@ -119,7 +125,7 @@ lock_server_cache_rsm::revoker()
 	assert(r == rlock_protocol::OK);
       }
       else {
-	printf("revoker [%s] bind failed!\n", (*it).c_str());
+	tprintf("revoker [%s] bind failed!\n", (*it).c_str());
       }
     }
     pthread_mutex_lock(&clck.m);
@@ -151,10 +157,10 @@ lock_server_cache_rsm::transferer()
     } else {
       clt = clck.owner;
     }
-    printf("transferer [%s] %llu\n", clt.c_str(), lid);
-    lock_protocol::xid_t xid = clck.xids[clt];
+    tprintf("transferer [%s] %llu\n", clt.c_str(), lid);
+    lock_protocol::xid_t xid = clck.xids[clt].sxid;
     std::string rid = clck.fowner;
-    lock_protocol::xid_t rxid = clck.xids[rid];
+    lock_protocol::xid_t rxid = clck.xids[rid].cxid;
     unsigned int rtype = (unsigned int) clck.ftype;
     pthread_mutex_unlock(&clck.m);
 
@@ -162,7 +168,7 @@ lock_server_cache_rsm::transferer()
       continue;
     }
 
-    printf("transferer sending transfer now [%s] %llu\n", clt.c_str(), lid);
+    tprintf("transferer sending transfer now [%s] %llu\n", clt.c_str(), lid);
 
     handle h(clt);
     rpcc *cl = h.safebind();
@@ -174,8 +180,9 @@ lock_server_cache_rsm::transferer()
       assert(r == rlock_protocol::OK);
     }
     else {
-      printf("transferer [%s] bind failed!\n", clt.c_str());
+      tprintf("transferer [%s] bind failed!\n", clt.c_str());
     }
+    tprintf("transferer sent to [%s] %llu\n", clt.c_str(), lid);
   }
 }
 
@@ -196,15 +203,15 @@ lock_server_cache_rsm::retryer()
     // Pick next client to 'retry'
     std::string clt = *clck.waiters.begin();
     clck.waiters.erase(clt); // remove from waiters
-    lock_protocol::xid_t xid = clck.xids[clt];
-    printf("retryer [%s] %llu\n", clt.c_str(), lid);
+    lock_protocol::xid_t xid = clck.xids[clt].cxid;
+    tprintf("retryer [%s] %llu\n", clt.c_str(), lid);
     pthread_mutex_unlock(&clck.m);
 
     if (!rsm->amiprimary() || !retry) {
       continue;
     }
 
-    printf("retryer sending retry now [%s] %llu\n", clt.c_str(), lid);
+    tprintf("retryer sending retry now [%s] %llu\n", clt.c_str(), lid);
 
     handle h(clt);
     rpcc *cl = h.safebind();
@@ -214,7 +221,7 @@ lock_server_cache_rsm::retryer()
       assert(r == rlock_protocol::OK);
     }
     else {
-      printf("retryer [%s] bind failed!\n", clt.c_str());
+      tprintf("retryer [%s] bind failed!\n", clt.c_str());
     }
   }
 }
@@ -229,15 +236,15 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
   cachable_lock_rsm &clck = get_lock(lid);
 
   pthread_mutex_lock(&clck.m);
-  printf("acquire %llu, %d [%s] [%llu, %llu]\n", lid, t, id.c_str(), 
-	 xid, clck.xids[id]); 
-  if (xid < clck.xids[id]) {
+  tprintf("acquire %llu, %d [%s] [%llu, (%llu, %llu)]\n", lid, t, id.c_str(), 
+	 xid, clck.xids[id].cxid, clck.xids[id].sxid); 
+  if (xid < clck.xids[id].cxid) {
     r = lock_protocol::RPCERR;
     pthread_mutex_unlock(&clck.m);
     goto end;
   }
   
-  if (xid == clck.xids[id]) {
+  if (xid == clck.xids[id].cxid) {
     if (type == clck.type) {
       if (type == lock_protocol::WRITE) {
 	assert(clck.copyset.size() == 0);
@@ -260,9 +267,10 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
     }
   }
 
-  clck.xids[id] = xid;
+  clck.xids[id].cxid = xid;
 
   if (clck.fowner.length() != 0) {
+    tprintf("acquire %s adding to waiters...\n", id.c_str());
     clck.waiters.insert(id);
     r = lock_protocol::RETRY;
     pthread_mutex_unlock(&clck.m);
@@ -271,6 +279,7 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
 
   // No owner or fowner!
   if (clck.owner.length() == 0) {
+    tprintf("acquire %s adding to fowner w/ no owner...\n", id.c_str());
     assert(clck.copyset.size() == 0);
     clck.fowner = id;
     clck.ftype = type;
@@ -284,6 +293,7 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
     goto end;
   }
 
+  tprintf("acquire %s adding to fowner with owner...\n", id.c_str());
   clck.fowner = id;
   clck.ftype = type;
   r = lock_protocol::OK;
@@ -292,11 +302,19 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
   pthread_mutex_lock(&m);
   if (type == lock_protocol::WRITE) {
     // revoker will invalidate all copyset items
-    revokeset.insert(lid);
-    pthread_cond_signal(&revoker_cv);
+    tprintf("acquire %s I am write, revoke...\n", id.c_str());
+    if (clck.copyset.size() > 0) {
+      revokeset.insert(lid);
+      pthread_cond_signal(&revoker_cv);
+    }
+    else { // copyset empty? straight to xfer flow!
+      transferset.insert(lid);
+      pthread_cond_signal(&transferer_cv);
+    }
   }
   else {
     // transferer will figure out that need to send from owner
+    tprintf("acquire %s I am read, xfer...\n", id.c_str());
     transferset.insert(lid);
     pthread_cond_signal(&transferer_cv);
   }
@@ -314,8 +332,8 @@ lock_server_cache_rsm::release(lock_protocol::lockid_t lid, std::string id,
   cachable_lock_rsm &clck = get_lock(lid);
 
   pthread_mutex_lock(&clck.m);
-  printf("release %llu [%s] W[%d]\n", lid, id.c_str(), clck.waiters.size());
-  if (clck.xids[id] == xid) {
+  tprintf("release %llu [%s] W[%d]\n", lid, id.c_str(), clck.waiters.size());
+  if (clck.xids[id].sxid == xid) {
     assert(clck.owner != id); // owner never sends release; its implicit in ack
     clck.copyset.erase(id);
     int size = clck.copyset.size();
@@ -330,7 +348,7 @@ lock_server_cache_rsm::release(lock_protocol::lockid_t lid, std::string id,
     r = lock_protocol::OK;
   }
   else {
-    printf("release %llu [%s] out-of-date request!\n", lid, id.c_str());
+    tprintf("release %llu [%s] out-of-date request!\n", lid, id.c_str());
     r = lock_protocol::RPCERR;
     pthread_mutex_unlock(&clck.m);
   }
@@ -346,8 +364,10 @@ lock_server_cache_rsm::ack(lock_protocol::lockid_t lid, std::string id,
   cachable_lock_rsm &clck = get_lock(lid);
 
   pthread_mutex_lock(&clck.m);
-  printf("ack %llu [%s] [%llu, %llu]\n", lid, id.c_str(), xid, clck.xids[id]);
-  if (clck.xids[id] == xid) {
+  tprintf("ack %llu [%s] [%llu, (%llu, %llu)]\n", lid, id.c_str(), xid, 
+	 clck.xids[id].cxid, clck.xids[id].sxid);
+  if (clck.xids[id].cxid == xid) {
+    clck.xids[id].sxid = xid;
     if (clck.owner.length() == 0) {
       assert(clck.copyset.size() == 0);
       clck.owner = id;
@@ -375,7 +395,7 @@ lock_server_cache_rsm::ack(lock_protocol::lockid_t lid, std::string id,
     r = lock_protocol::OK;
   }
   else {
-    printf("ack %llu [%s] out-of-date request!\n", lid, id.c_str());
+    tprintf("ack %llu [%s] out-of-date request!\n", lid, id.c_str());
     r = lock_protocol::RPCERR;
     pthread_mutex_unlock(&clck.m);
   }

@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <time.h>
 #include "marshall.h"
+#include "tprintf.h"
 
 extent::extent()
 {
@@ -21,7 +22,7 @@ extent::extent(extent_protocol::extentid_t eid)
 extent_client::extent_client()
 {
   pthread_mutex_init(&m, NULL);
-  printf("extent size: %d\n", extentset.size());
+  tprintf("extent size: %d\n", extentset.size());
 }
 
 extent_client::~extent_client()
@@ -33,7 +34,7 @@ extent_protocol::status
 extent_client::get(extent_protocol::extentid_t eid, std::string &buf)
 {
   extent_protocol::status r = extent_protocol::OK;
-  printf("get %llu\n", eid);
+  tprintf("get %llu\n", eid);
   pthread_mutex_lock(&m);
   if (extentset.count(eid)) {
     extent &extent = extentset[eid];
@@ -52,7 +53,7 @@ extent_client::getattr(extent_protocol::extentid_t eid,
 		       extent_protocol::attr &attr)
 {
   extent_protocol::status r = extent_protocol::OK;
-  printf("getattr %llu\n", eid);
+  tprintf("getattr %llu\n", eid);
   pthread_mutex_lock(&m);
   if (extentset.count(eid)) {
     extent &extent = extentset[eid];
@@ -70,7 +71,7 @@ extent_protocol::status
 extent_client::put(extent_protocol::extentid_t eid, std::string buf)
 {
   extent_protocol::status r = extent_protocol::OK;
-  printf("put %llu\n", eid);
+  tprintf("put %llu\n", eid);
   pthread_mutex_lock(&m);
   if (!extentset.count(eid)) {
     extentset[eid] = extent(eid);
@@ -113,7 +114,8 @@ extent_client::flush(extent_protocol::extentid_t eid)
 void 
 extent_client::populate(extent_protocol::extentid_t eid, std::string data)
 {
-  printf("==> populate %llu data size: %d\n", eid, extentset.count(eid));
+  tprintf("==> populate %llu %d {my cache: %d}\n", eid, 
+	 data.length(), extentset.count(eid));
   unmarshall rep(data);
   pthread_mutex_lock(&m);
   assert(extentset.count(eid) == 0);
@@ -134,7 +136,7 @@ extent_client::populate(extent_protocol::extentid_t eid, std::string data)
 void 
 extent_client::fetch(extent_protocol::extentid_t eid, std::string &data)
 {
-  printf("==> fetch %llu\n", eid);
+  tprintf("==> fetch %llu\n", eid);
   marshall rep;
   pthread_mutex_lock(&m);
   if (extentset.count(eid) != 0) {
@@ -151,14 +153,14 @@ extent_client::fetch(extent_protocol::extentid_t eid, std::string &data)
   }
   pthread_mutex_unlock(&m);
   data = rep.str();
-  printf("==> fetch %llu -> %d\n", eid, data.size());
+  tprintf("==> fetch %llu -> %d\n", eid, data.size());
 }
 
 void
 extent_client::evict(extent_protocol::extentid_t eid)
 {
   if (extentset.count(eid) != 0) {
-    printf("==> evict %llu\n", eid);
+    tprintf("==> evict %llu\n", eid);
     extentset.erase(eid);
   }
 }

@@ -9,6 +9,11 @@
 #include "rsm_state_transfer.h"
 #include "rsm.h"
 
+struct xid {
+  lock_protocol::xid_t cxid;
+  lock_protocol::xid_t sxid;
+};
+
 class cachable_lock_rsm {
  public:
   pthread_mutex_t m;
@@ -18,7 +23,7 @@ class cachable_lock_rsm {
   std::string fowner;
   lock_protocol::lock_type type;
   lock_protocol::lock_type ftype;
-  std::map<std::string, lock_protocol::xid_t> xids;
+  std::map<std::string, struct xid> xids;
   cachable_lock_rsm();
   ~cachable_lock_rsm();
 };

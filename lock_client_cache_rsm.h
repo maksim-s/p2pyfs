@@ -41,6 +41,9 @@ class cached_lock_rsm {
   pthread_cond_t allfree_cv;
   pthread_cond_t none_cv;
 
+  // 'acquire' flow completed?
+  bool acquired;
+
   // 'retry' RPC received?
   bool retried;
 
