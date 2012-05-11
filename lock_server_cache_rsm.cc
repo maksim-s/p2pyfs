@@ -195,6 +195,7 @@ lock_server_cache_rsm::retryer()
     bool retry = clck.waiters.size() > 0;
     // Pick next client to 'retry'
     std::string clt = *clck.waiters.begin();
+    clck.waiters.erase(clt); // remove from waiters
     lock_protocol::xid_t xid = clck.xids[clt];
     printf("retryer [%s] %llu\n", clt.c_str(), lid);
     pthread_mutex_unlock(&clck.m);

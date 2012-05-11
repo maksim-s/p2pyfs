@@ -127,7 +127,6 @@ extent_client::populate(extent_protocol::extentid_t eid, std::string data)
     rep >> extent.attr.mtime;
     rep >> extent.attr.mtime;
     rep >> extent.attr.size;
-    printf("==> populate %llu -> %s\n", eid, extent.data.c_str());
   }
   pthread_mutex_unlock(&m);
 }
@@ -146,7 +145,6 @@ extent_client::fetch(extent_protocol::extentid_t eid, std::string &data)
     rep << extent.attr.mtime;
     rep << extent.attr.ctime;
     rep << extent.attr.size;
-    printf("==> fetch %llu -> %s\n", eid, extent.data.c_str());
   }
   else {
     rep << false;

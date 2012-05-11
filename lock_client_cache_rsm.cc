@@ -388,8 +388,8 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
   cached_lock_rsm &clck = get_lock(lid);
 
   printf("[%s] acquire -> %llu, %d\n", id.c_str(), lid, type);
-  pthread_mutex_lock(&clck.m);
 
+  pthread_mutex_lock(&clck.m);
  start:
   switch(clck.status()) {
   case cached_lock_rsm::ACQUIRING:
