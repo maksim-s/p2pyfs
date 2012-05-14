@@ -423,4 +423,3 @@ lock_server_cache_rsm::stat(lock_protocol::lockid_t lid, int &r)
   r = 0;
   return lock_protocol::OK;
 }
-
