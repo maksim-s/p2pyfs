@@ -157,7 +157,7 @@ lock_client_cache_rsm::revoker()
     assert(it->second.size() > 0); // There is a revoke to do
     lid = it->first;
     std::string cid = it->second;
-    revokeset.erase(it++); // Remove from revokeset
+    revokeset.erase(it); // Remove from revokeset
     pthread_mutex_unlock(&m);
 
     cached_lock_rsm &clck = get_lock(lid);
@@ -305,21 +305,23 @@ lock_client_cache_rsm::transferer()
  
       clck.copyset.insert(rid);
       clck.access = lock_protocol::READ;
+
+      assert(req.xid == clck.xids[rid].cxid);
+      clck.xids[rid].sxid = req.xid; // change successful xid
+      clck.requests.erase(it2); // remove before call
+	
       handle h(rid);
       rpcc *cl = h.safebind();
       if (cl) {
 	int ret;
-	tprintf("[%s] transferer -> processing %llu send WRITE [%llu, %llu]\n", 
+	tprintf("[%s] transferer -> %llu send READ [%llu, %llu]\n", 
 	       id.c_str(), lid, req.xid,
 	       clck.xids[rid].cxid);
-	assert(req.xid == clck.xids[rid].cxid);
-	clck.xids[rid].sxid = req.xid; // change successful xid
 	pthread_mutex_unlock(&clck.m);
 	int r = cl->call(clock_protocol::receive, lid, req.xid, contents, ret);
 	pthread_mutex_lock(&clck.m);
 	assert(r == clock_protocol::OK);
       }
-      clck.requests.erase(it2);
     }
 
     tprintf("[%s] transferer -> processing %llu checking WRITE [%d]\n", 
@@ -367,6 +369,8 @@ lock_client_cache_rsm::transferer()
       clck.amiowner = false;
       clck.newowner = rid;
       
+      clck.requests.erase(it2); // remove before call
+
       handle h(rid);
       rpcc *cl = h.safebind();
       if (cl) {
@@ -378,8 +382,6 @@ lock_client_cache_rsm::transferer()
 	pthread_mutex_lock(&clck.m);
 	assert(r == clock_protocol::OK);
       }
-
-      clck.requests.erase(it2);
     } 
     pthread_mutex_unlock(&clck.m);
   }
