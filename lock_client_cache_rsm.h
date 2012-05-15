@@ -23,47 +23,73 @@ class lock_release_user {
   virtual void dopopulate(lock_protocol::lockid_t, std::string data) = 0;
   virtual void dofetch(lock_protocol::lockid_t, std::string &data) = 0;
   virtual void doevict(lock_protocol::lockid_t) = 0;
+  virtual void doinit(lock_protocol::lockid_t) = 0;
   virtual ~lock_release_user() {};
 };
+
+struct xid {
+  lock_protocol::xid_t cxid;
+  lock_protocol::xid_t sxid;
+};
+
+typedef struct _request_t {
+  std::string id;
+  lock_protocol::xid_t xid;
+  lock_protocol::lock_type type;
+
+  _request_t() {
+    id = "";
+    xid = 0;
+    type = lock_protocol::UNUSED;
+  }
+} request_t;
 
 class cached_lock_rsm {
  public:
   // State
   enum lock_status { NONE, FREE, LOCKED, ACQUIRING, REVOKING };
 
+  // Am I owner?
+  bool amiowner;
+
+  // Copyset
+  std::set<std::string> copyset;
+
+  // Queued requests
+  std::map<std::string, request_t> requests;
+
+  // Access type
+  lock_protocol::lock_type access;
+
+  // xid/clt map
+  std::map<std::string, struct xid> xids;
+
+  // Who did I give up my ownership to?
+  std::string newowner;
+
   // Mutex
   pthread_mutex_t m;
 
   // CVs
-  pthread_cond_t retry_cv;
   pthread_cond_t receive_cv;
   pthread_cond_t readfree_cv;
-  pthread_cond_t allfree_cv;
+  pthread_cond_t free_cv;
   pthread_cond_t none_cv;
 
   // 'acquire' flow completed?
   bool acquired;
 
-  // 'retry' RPC received?
-  bool retried;
-
   // 'receive' RPC received?
   bool received;
 
-  // xid for last successful acquire
-  lock_protocol::xid_t sxid;
-
   // xid for last acquire sent to server
-  lock_protocol::xid_t cxid;
+  struct xid myxid;
 
-  // Owners 
-  std::set<pthread_t> owners;
+  // Local thread owners 
+  std::set<pthread_t> lowners;
 
-  // Owner type R/W
-  lock_protocol::lock_type otype;
-
-  // Server leased type R/W
-  lock_protocol::lock_type stype;
+  // Local lock type given
+  lock_protocol::lock_type ltype;
 
   cached_lock_rsm();
   ~cached_lock_rsm();
@@ -73,12 +99,6 @@ class cached_lock_rsm {
  private:
   // Status
   lock_status _status;
-};
-
-struct transfer_t {
-  std::string rid;
-  lock_protocol::xid_t rxid;
-  lock_protocol::lock_type rtype;
 };
 
 class lock_client_cache_rsm;
@@ -100,22 +120,19 @@ class lock_client_cache_rsm : public lock_client {
   // CVs
   pthread_cond_t revoker_cv;
   pthread_cond_t transferer_cv;
-  pthread_cond_t acker_cv;
+  pthread_cond_t invalidater_cv;
 
   // Global Maps
   std::map<lock_protocol::lockid_t, cached_lock_rsm> lockset;
-  std::map<lock_protocol::lockid_t, int> revokeset;
-  std::map<lock_protocol::lockid_t, struct transfer_t> transferset;
-  std::map<lock_protocol::lockid_t, int> ackset;
+  std::map<lock_protocol::lockid_t, std::string> revokeset;
+  std::map<lock_protocol::lockid_t, int> transferset;
+  std::map<lock_protocol::lockid_t, int> invalidateset;
 
   // Getter for lockset
   cached_lock_rsm& get_lock(lock_protocol::lockid_t);
 
   // RPC requests to server
-  lock_protocol::status sacquire(lock_protocol::lockid_t, 
-				 lock_protocol::lock_type, cached_lock_rsm&);
   lock_protocol::status srelease(lock_protocol::lockid_t, cached_lock_rsm&);
-  lock_protocol::status sack(lock_protocol::lockid_t, cached_lock_rsm&);
 
  public:
   static int last_port;
@@ -124,22 +141,22 @@ class lock_client_cache_rsm : public lock_client {
 
   void revoker();
   void transferer();
-  void acker();
+  void invalidater();
 
   lock_protocol::status acquire(lock_protocol::lockid_t, 
 				lock_protocol::lock_type);
   virtual lock_protocol::status release(lock_protocol::lockid_t);
 
+  rlock_protocol::status invalidate_handler(lock_protocol::lockid_t, 
+					lock_protocol::xid_t, 
+                                        std::string cid, int &);
   rlock_protocol::status revoke_handler(lock_protocol::lockid_t, 
-					lock_protocol::xid_t, int &);
+					std::string cid, int &);
   rlock_protocol::status transfer_handler(lock_protocol::lockid_t, 
 					  lock_protocol::xid_t, 
 				      	  unsigned int, 
 					  std::string, lock_protocol::xid_t,
-					  int &);
-  rlock_protocol::status retry_handler(lock_protocol::lockid_t, 
-				       lock_protocol::xid_t, int &);
-
+					  std::string &);
   clock_protocol::status receive_handler(lock_protocol::lockid_t, 
 					 lock_protocol::xid_t, 
 					 std::string, int &);

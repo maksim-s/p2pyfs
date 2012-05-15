@@ -111,6 +111,15 @@ extent_client::flush(extent_protocol::extentid_t eid)
   pthread_mutex_unlock(&m);
 }
 
+
+
+void 
+extent_client::init(extent_protocol::extentid_t eid)
+{
+  tprintf("==> init %llu {my cache: %d}\n", eid, extentset.count(eid));
+  this->put(eid, "");
+}
+
 void 
 extent_client::populate(extent_protocol::extentid_t eid, std::string data)
 {
@@ -186,4 +195,10 @@ void
 extent_client::doevict(lock_protocol::lockid_t lid)
 {
   this->evict(lid);
+}
+
+void 
+extent_client::doinit(lock_protocol::lockid_t lid)
+{
+  this->init(lid);
 }

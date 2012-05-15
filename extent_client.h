@@ -38,10 +38,12 @@ class extent_client : public lock_release_user {
   void populate(extent_protocol::extentid_t, std::string);
   void fetch(extent_protocol::extentid_t, std::string &);
   void evict(extent_protocol::extentid_t);
+  void init(extent_protocol::extentid_t);
   void dorelease(lock_protocol::lockid_t);
   void dopopulate(lock_protocol::lockid_t, std::string);
   void dofetch(lock_protocol::lockid_t, std::string &);
   void doevict(lock_protocol::lockid_t);
+  void doinit(lock_protocol::lockid_t);
 };
 
 #endif 
