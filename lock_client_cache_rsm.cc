@@ -272,11 +272,14 @@ lock_client_cache_rsm::transferer()
     tprintf("[%s] transferer -> processing %llu [%d]\n", id.c_str(), lid,
 	   clck.requests.size());
 
-    std::map<std::string, request_t>::iterator it2 = clck.requests.begin();
+    std::map<std::string, request_t>::iterator it2;
 
     // Service all READ requests
-    for (; it2 != clck.requests.end(); it2++) {
+    for (it2 = clck.requests.begin(); 
+	 it2 != clck.requests.end(); 
+	 /*it2++*/) {
       if ((it2->second).type == lock_protocol::WRITE) {
+	it2++;
 	continue;
       }
       std::string rid = it2->first;
@@ -308,7 +311,7 @@ lock_client_cache_rsm::transferer()
 
       assert(req.xid == clck.xids[rid].cxid);
       clck.xids[rid].sxid = req.xid; // change successful xid
-      clck.requests.erase(it2); // remove before call
+      clck.requests.erase(it2++); // remove before call
 	
       handle h(rid);
       rpcc *cl = h.safebind();
@@ -318,7 +321,8 @@ lock_client_cache_rsm::transferer()
 	       id.c_str(), lid, req.xid,
 	       clck.xids[rid].cxid);
 	pthread_mutex_unlock(&clck.m);
-	int r = cl->call(clock_protocol::receive, lid, req.xid, contents, ret);
+	int r = cl->call(clock_protocol::receive, lid, clck.xids[rid].sxid, 
+			 contents, ret);
 	pthread_mutex_lock(&clck.m);
 	assert(r == clock_protocol::OK);
       }
@@ -369,7 +373,9 @@ lock_client_cache_rsm::transferer()
       clck.amiowner = false;
       clck.newowner = rid;
       
-      clck.requests.erase(it2); // remove before call
+      clck.requests.erase(it2++); // remove before call
+
+      assert(clck.requests.size() == 0);
 
       handle h(rid);
       rpcc *cl = h.safebind();
