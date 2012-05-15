@@ -243,7 +243,7 @@ lock_client_cache_rsm::transferer()
     while (transferset.size() == 0) {
       pthread_cond_wait(&transferer_cv, &m);
     } 
-    printf("[%s] transferer waking up...\n", id.c_str());
+    tprintf("[%s] transferer waking up...\n", id.c_str());
     std::map<lock_protocol::lockid_t, int>::iterator it = transferset.begin();
     lock_protocol::lockid_t lid = it->first;
     transferset.erase(it);
@@ -269,7 +269,7 @@ lock_client_cache_rsm::transferer()
     }
 
   next:
-    printf("[%s] transferer -> processing %llu [%d]\n", id.c_str(), lid,
+    tprintf("[%s] transferer -> processing %llu [%d]\n", id.c_str(), lid,
 	   clck.requests.size());
 
     std::map<std::string, request_t>::iterator it2 = clck.requests.begin();
@@ -284,7 +284,7 @@ lock_client_cache_rsm::transferer()
       std::string contents;
       lu->dofetch(lid, contents);
 
-      printf("[%s] transferer -> %llu servicing READ to %s\n", id.c_str(), lid, 
+      tprintf("[%s] transferer -> %llu servicing READ to %s\n", id.c_str(), lid, 
 	     rid.c_str());
 
       while(true) {
@@ -309,7 +309,7 @@ lock_client_cache_rsm::transferer()
       rpcc *cl = h.safebind();
       if (cl) {
 	int ret;
-	printf("[%s] transferer -> processing %llu send WRITE [%llu, %llu]\n", 
+	tprintf("[%s] transferer -> processing %llu send WRITE [%llu, %llu]\n", 
 	       id.c_str(), lid, req.xid,
 	       clck.xids[rid].cxid);
 	assert(req.xid == clck.xids[rid].cxid);
@@ -322,7 +322,7 @@ lock_client_cache_rsm::transferer()
       clck.requests.erase(it2);
     }
 
-    printf("[%s] transferer -> processing %llu checking WRITE [%d]\n", 
+    tprintf("[%s] transferer -> processing %llu checking WRITE [%d]\n", 
 	   id.c_str(), lid,
 	   clck.requests.size());
 
@@ -404,7 +404,7 @@ lock_client_cache_rsm::invalidater()
     cached_lock_rsm& clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
 
-    printf("[%s] invalidater -> processing %llu [rq: %d, cs: %d]\n", 
+    tprintf("[%s] invalidater -> processing %llu [rq: %d, cs: %d]\n", 
 	   id.c_str(), lid,
 	   clck.requests.size(), clck.copyset.size());
 
@@ -414,7 +414,7 @@ lock_client_cache_rsm::invalidater()
       std::set<std::string> cp = clck.copyset;      
       std::set<std::string>::iterator it;
       for (it = cp.begin(); it != cp.end(); it++) {
-	printf("[%s] invalidater -> %llu sending invalidate %s\n", 
+	tprintf("[%s] invalidater -> %llu sending invalidate %s\n", 
 	       id.c_str(), lid, (*it).c_str());
         handle h(*it);
         rpcc *cl = h.safebind();
@@ -760,6 +760,10 @@ lock_client_cache_rsm::transfer_handler(lock_protocol::lockid_t lid,
   // Already given up ownership?
   if (clck.status() == cached_lock_rsm::NONE) {
      assert(!clck.amiowner);
+     tprintf("[%s] transfer_handler -> %llu, %d, %s [NONE CASE]\n", 
+	     id.c_str(), 
+	     lid, rtype, 
+	     rid.c_str());
      ret = clck.newowner;
      pthread_mutex_unlock(&clck.m);
      return rlock_protocol::RETRY;
@@ -769,6 +773,10 @@ lock_client_cache_rsm::transfer_handler(lock_protocol::lockid_t lid,
   if (clck.myxid.cxid > xid) {
     assert(clck.status() == cached_lock_rsm::ACQUIRING);
     assert(!clck.amiowner);
+     tprintf("[%s] transfer_handler -> %llu, %d, %s [xid<cxid CASE]\n", 
+	     id.c_str(), 
+	     lid, rtype, 
+	     rid.c_str());
     ret = clck.newowner;
     pthread_mutex_unlock(&clck.m);
     return rlock_protocol::RETRY;

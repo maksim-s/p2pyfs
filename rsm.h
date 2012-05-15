@@ -51,6 +51,7 @@ class rsm : public config_view_change {
   rsm_test_protocol::status test_net_repairreq(int heal, int &r);
   rsm_test_protocol::status breakpointreq(int b, int &r);
 
+  pthread_mutex_t execute_mutex;
   pthread_mutex_t rsm_mutex;
   pthread_mutex_t invoke_mutex;
   pthread_cond_t recovery_cond;

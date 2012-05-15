@@ -78,9 +78,10 @@ extent_client::put(extent_protocol::extentid_t eid, std::string buf)
   }
   extent &extent = extentset[eid];
   extent.data = std::string(buf);
-  time((time_t *) &extent.attr.atime);
-  time((time_t *) &extent.attr.ctime);
-  time((time_t *) &extent.attr.mtime);
+  time_t t = time(NULL);
+  extent.attr.atime = t;
+  extent.attr.ctime = t;
+  extent.attr.mtime = t;
 
   if (eid & 0x80000000) { // is file?
     extent.attr.size = buf.size();
@@ -135,7 +136,7 @@ extent_client::populate(extent_protocol::extentid_t eid, std::string data)
     extent &extent = extentset[eid];
     rep >> extent.data;
     rep >> extent.attr.atime;
-    rep >> extent.attr.mtime;
+    rep >> extent.attr.ctime;
     rep >> extent.attr.mtime;
     rep >> extent.attr.size;
   }
