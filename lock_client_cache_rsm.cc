@@ -214,11 +214,7 @@ lock_client_cache_rsm::revoker()
     if (cl) {
       int ret;
       pthread_mutex_unlock(&clck.m);
-      tprintf("[%s] revoker -> %llu before rpc %s\n", id.c_str(), lid,
-	      cid.c_str());
       int r = cl->call(clock_protocol::revoke, lid, id, ret);
-      tprintf("[%s] revoker -> %llu after rpc %s\n", id.c_str(), lid,
-	      cid.c_str());
       pthread_mutex_lock(&clck.m);
       assert(r == clock_protocol::OK);
     }
@@ -252,15 +248,18 @@ lock_client_cache_rsm::transferer()
     cached_lock_rsm& clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
 
+    // Haven't completed write flow? Process later...
     if (clck.status() == cached_lock_rsm::ACQUIRING) {
       tprintf("[%s] transferer -> %llu WRITE bypass\n", id.c_str(), lid);
       assert(clck.access == lock_protocol::WRITE);
-      goto next;
+      assert(!clck.acquired);
+      goto redo;
     }
 
     if (!clck.acquired) { // Must finish acquire
       assert(clck.status() == cached_lock_rsm::ACQUIRING);
       assert(clck.access == lock_protocol::WRITE);
+    redo:
       pthread_mutex_unlock(&clck.m);
       pthread_mutex_lock(&m);
       transferset[lid]++;
@@ -268,7 +267,6 @@ lock_client_cache_rsm::transferer()
       continue;
     }
 
-  next:
     tprintf("[%s] transferer -> processing %llu [%d]\n", id.c_str(), lid,
 	   clck.requests.size());
 
@@ -342,13 +340,6 @@ lock_client_cache_rsm::transferer()
       assert(clck.newowner.length() == 0);
 
       while(true) {
-	if (clck.status() == cached_lock_rsm::ACQUIRING) {
-	  // The second acquire in flight MUST be WRITE
-	  assert(clck.access == lock_protocol::WRITE);
-	  tprintf("[%s] transferer -> %llu WRITE bypass\n", id.c_str(), lid);
-	  goto next_no_schange;
-	}
-	
 	if (clck.status() == cached_lock_rsm::FREE) {
 	  break;
 	}
@@ -359,7 +350,6 @@ lock_client_cache_rsm::transferer()
 
       clck.set_status(cached_lock_rsm::NONE);
 
-    next_no_schange:
       std::string contents;
       lu->dofetch(lid, contents);
       lu->doevict(lid);
@@ -416,9 +406,28 @@ lock_client_cache_rsm::invalidater()
 	   id.c_str(), lid,
 	   clck.requests.size(), clck.copyset.size());
 
+    // Have I finished WRITE flow?
+    // Haven't completed write flow? Process later...
+    if (clck.status() == cached_lock_rsm::ACQUIRING) {
+      tprintf("[%s] transferer -> %llu WRITE bypass\n", id.c_str(), lid);
+      assert(clck.access == lock_protocol::WRITE);
+      assert(!clck.acquired);
+      goto redo;
+    }
+
+    if (!clck.acquired) { // Must finish acquire
+      assert(clck.status() == cached_lock_rsm::ACQUIRING);
+      assert(clck.access == lock_protocol::WRITE);
+    redo:
+      pthread_mutex_unlock(&clck.m);
+      pthread_mutex_lock(&m);
+      invalidateset[lid]++;
+      pthread_mutex_unlock(&m);
+      continue;
+    }
+
     if (clck.requests.size() == 1 && clck.requests.begin()->second.type == 
         lock_protocol::WRITE) {
-
       std::set<std::string> cp = clck.copyset;      
       std::set<std::string>::iterator it;
       for (it = cp.begin(); it != cp.end(); it++) {
@@ -763,7 +772,15 @@ lock_client_cache_rsm::transfer_handler(lock_protocol::lockid_t lid,
 
   pthread_mutex_lock(&clck.m);
 
-  if (clck.amiowner) goto process;
+  // Haven't completed acquire yet?
+  if (clck.myxid.sxid != xid) {
+    assert(clck.myxid.sxid < xid);
+    goto process;
+  }
+
+  if (clck.amiowner) {
+    goto process;
+  }
 
   // Already given up ownership?
   if (clck.status() == cached_lock_rsm::NONE) {
