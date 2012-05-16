@@ -107,6 +107,7 @@ rsm::rsm(std::string _first, std::string _me)
   myvs.seqno = 1;
 
   pthread_mutex_init(&rsm_mutex, NULL);
+  pthread_mutex_init(&execute_mutex, NULL);
   pthread_mutex_init(&invoke_mutex, NULL);
   pthread_cond_init(&recovery_cond, NULL);
   pthread_cond_init(&sync_cond, NULL);
@@ -490,7 +491,11 @@ rsm::invoke(int proc, viewstamp vs, std::string req, int &dummy)
   else {
     last_myvs = myvs;
     myvs.seqno++;
+    pthread_mutex_lock(&execute_mutex);
+    pthread_mutex_unlock(&rsm_mutex);
     execute(proc, req, r);
+    pthread_mutex_unlock(&execute_mutex);
+    pthread_mutex_lock(&rsm_mutex);
     breakpoint1();
   }
   tprintf("invoke: returning %d\n", ret);

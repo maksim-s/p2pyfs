@@ -22,8 +22,8 @@ lock_server_cache_rsm::lock_server_cache_rsm(class rsm *_rsm, std::string _es)
   : rsm (_rsm)
 {
   pthread_mutex_init(&m, NULL);
-  rsm = _rsm;
   es = _es;
+  rsm = _rsm;
   rsm->set_state_transfer(this); 
 }
 
@@ -38,13 +38,13 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
 {
   // Can hold mutex across RPCs w/o any chance of remote deadlock as 
   // server only processes one type of request
-  ScopedLock ml(&m);
-  int r;
+  //  ScopedLock ml(&m);
+  int r = rlock_protocol::OK;
   std::string s = "";
   cachable_lock_rsm &clck = lockset[lid];
 
-  tprintf("[%llu] Requester: %s, Owner: %s\n", lid, id.c_str(), 
-	  clck.owner.c_str());
+  tprintf("[%llu] {%d} Requester: %s, Owner: %s (%p)\n", lid, t, id.c_str(), 
+	  clck.owner.c_str(), rsm);
 
   if (clck.owner.length() == 0) {
     clck.owner = id;
@@ -52,14 +52,19 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
     r = lock_protocol::XOK; // HACK: make this guy the owner
   }
   else {
-    handle h(clck.owner);
-    rpcc *cl = h.safebind();
-    if (cl) {
-    r = cl->call(rlock_protocol::transfer, lid, clck.xids[clck.owner], 
-		 t, id, xid, s);
+    if (!rsm->amiprimary()) {
+      tprintf("[%llu] {%d} Requester: %s, Owner: %s (SLAVE)\n", lid, t, 
+	      id.c_str(), clck.owner.c_str());
     }
     else {
-      return lock_protocol::RPCERR;
+      tprintf("[%llu] {%d} Requester: %s, Owner: %s (PRIMARY)\n", lid, t, 
+	      id.c_str(), clck.owner.c_str());
+      handle h(clck.owner);
+      rpcc *cl = h.safebind();
+      if (cl) {
+        r = cl->call(rlock_protocol::transfer, lid, clck.xids[clck.owner], 
+            t, id, xid, s);
+      }
     }
     
     if (r == rlock_protocol::RETRY) {
@@ -67,7 +72,6 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
       r = lock_protocol::RETRY;
     }
     else {
-      assert(r == rlock_protocol::OK);
       r = lock_protocol::OK;
     }
     
@@ -79,7 +83,8 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
     }
   }
 
-  tprintf("[%llu] Requester: %s, Owner: %s, Returning: %d\n", lid, id.c_str(), 
+  tprintf("[%llu] {%d}, Requester: %s, Owner: %s, Returning: %d\n", 
+	  lid, t, id.c_str(), 
 	  clck.owner.c_str(), r);
   return r;
 }
