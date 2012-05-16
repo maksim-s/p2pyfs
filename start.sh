@@ -91,8 +91,9 @@ x=0
 for YFSDIR in ${YFS_DIRS[@]}
 do
     echo "Checking $YFSDIR"
-    if [ `mount | grep "$YFSDIR" | grep -v grep | wc -l` -ne 1 ]; then
-	sh stop.sh
+    pwd=`pwd -P`
+    if [ `mount | grep "$pwd/yfs$x" | grep -v grep | wc -l` -ne 1 ]; then
+	./stop.sh
 	echo "Failed to mount YFS properly at ./yfs$x"
 	exit -1
     fi
