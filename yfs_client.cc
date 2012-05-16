@@ -56,11 +56,13 @@ yfs_client::addfile(inum parent, std::string name, bool is_file, inum &myinum)
   assert(!isfile(parent)); // parent must be directory inode
   assert(name.length()); // name length must be > 0
 
+  printf("bnb3\n");
   bool success = false;
   std::string contents;
   
   lc->acquire(parent, lock_protocol::WRITE);
   if (ec->get(parent, contents) == extent_protocol::OK) {
+    printf("bnb4\n");
     std::istringstream is(contents);
     std::ostringstream os;
     std::string line;
@@ -76,21 +78,25 @@ yfs_client::addfile(inum parent, std::string name, bool is_file, inum &myinum)
       assert(sep != 0 && sep != line.length() - 1 && sep != std::string::npos);
 
       if (!i) { // If file has not been added yet
-	cmp = strcmp(line.substr(0, sep).c_str(), name.c_str());
-	if (cmp == 0) { // Name already exists in dir
-	  sscanf(line.substr(sep + 1).c_str(), "%llu", &i);
-	  break;
-	}
-	else if (cmp > 0) { // Lexicographically canonical place
-	  i = newinum(is_file);
-	  os << name << "/" << i << std::endl;
-	  success = true;
-	}
+        cmp = strcmp(line.substr(0, sep).c_str(), name.c_str());
+        if (cmp == 0) { // Name already exists in dir
+          sscanf(line.substr(sep + 1).c_str(), "%llu", &i);
+          printf("bad news bears\n");
+          break;
+        }
+        else if (cmp > 0) { // Lexicographically canonical place
+          printf("bnb6\n");
+          i = newinum(is_file);
+          os << name << "/" << i << std::endl;
+          success = true;
+        }
       }
       os << line << std::endl;
     }
 
     if (!i) { // Name should go at the end?
+
+      printf("bnb5\n");
       i = newinum(is_file);
       os << name << "/" << i << std::endl;
       success = true;
@@ -103,6 +109,7 @@ yfs_client::addfile(inum parent, std::string name, bool is_file, inum &myinum)
     myinum = i;
   }
 
+  printf("%d hi\n", success);
   lc->release(parent);
   return success;
 }
@@ -192,8 +199,8 @@ yfs_client::lookup(inum parent, std::string name)
     std::string line;
     while (getline(is, line)) {
       if (line.find(name) == 0 && line[name.length()] == '/') {
-	sscanf(line.substr(name.length() + 1).data(), "%llu", &i);
-	break;
+        sscanf(line.substr(name.length() + 1).data(), "%llu", &i);
+        break;
       }
     }
   }
@@ -206,6 +213,7 @@ yfs_client::status
 yfs_client::create(inum parent, std::string name, inum &myinum)
 {
   printf("create %016llx -> %s\n", parent, name.c_str());
+  printf("bnb2\n");
   status r;
 
   if (addfile(parent, name, true, myinum)) {

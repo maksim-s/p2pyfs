@@ -168,10 +168,12 @@ extent_client::fetch(extent_protocol::extentid_t eid, std::string &data)
 void
 extent_client::evict(extent_protocol::extentid_t eid)
 {
+  pthread_mutex_lock(&m);
   if (extentset.count(eid) != 0) {
     tprintf("==> evict %llu\n", eid);
     extentset.erase(eid);
   }
+  pthread_mutex_unlock(&m);
 }
 void 
 extent_client::dorelease(lock_protocol::lockid_t lid)

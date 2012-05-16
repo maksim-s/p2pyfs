@@ -47,7 +47,7 @@ typedef struct _request_t {
 class cached_lock_rsm {
  public:
   // State
-  enum lock_status { NONE, FREE, LOCKED, ACQUIRING, REVOKING };
+  enum lock_status { NONE, FREE, LOCKED, ACQUIRING, REVOKING, UPGRADING };
 
   // Am I owner?
   bool amiowner;
