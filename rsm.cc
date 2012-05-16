@@ -494,11 +494,10 @@ rsm::invoke(int proc, viewstamp vs, std::string req, int &dummy)
     pthread_mutex_lock(&execute_mutex);
     pthread_mutex_unlock(&rsm_mutex);
     execute(proc, req, r);
-    pthread_mutex_unlock(&execute_mutex);
-    pthread_mutex_lock(&rsm_mutex);
     breakpoint1();
   }
   tprintf("invoke: returning %d\n", ret);
+  pthread_mutex_unlock(&execute_mutex);
   return ret;
 }
 

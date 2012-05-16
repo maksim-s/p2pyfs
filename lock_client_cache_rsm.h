@@ -27,11 +27,6 @@ class lock_release_user {
   virtual ~lock_release_user() {};
 };
 
-struct xid {
-  lock_protocol::xid_t cxid;
-  lock_protocol::xid_t sxid;
-};
-
 typedef struct _request_t {
   std::string id;
   lock_protocol::xid_t xid;
@@ -47,7 +42,7 @@ typedef struct _request_t {
 class cached_lock_rsm {
  public:
   // State
-  enum lock_status { NONE, FREE, LOCKED, ACQUIRING, REVOKING };
+  enum lock_status { NONE, FREE, LOCKED, ACQUIRING, UPGRADING, REVOKING };
 
   // Am I owner?
   bool amiowner;
@@ -55,17 +50,17 @@ class cached_lock_rsm {
   // Copyset
   std::set<std::string> copyset;
 
-  // Queued requests
-  std::map<std::string, request_t> requests;
+  // Queued read requests
+  std::vector<request_t> rrequests;
+
+  // Queued read requests
+  std::vector<request_t> wrequests;
 
   // Access type
   lock_protocol::lock_type access;
 
-  // xid/clt map
-  std::map<std::string, struct xid> xids;
-
-  // Who did I give up my ownership to?
-  std::string newowner;
+  // Request in flight?
+  lock_protocol::lock_type rif;
 
   // Mutex
   pthread_mutex_t m;
@@ -81,9 +76,6 @@ class cached_lock_rsm {
 
   // 'receive' RPC received?
   bool received;
-
-  // xid for last acquire sent to server
-  struct xid myxid;
 
   // Local thread owners 
   std::set<pthread_t> lowners;
@@ -120,19 +112,14 @@ class lock_client_cache_rsm : public lock_client {
   // CVs
   pthread_cond_t revoker_cv;
   pthread_cond_t transferer_cv;
-  pthread_cond_t invalidater_cv;
 
   // Global Maps
   std::map<lock_protocol::lockid_t, cached_lock_rsm> lockset;
   std::map<lock_protocol::lockid_t, std::string> revokeset;
-  std::map<lock_protocol::lockid_t, int> transferset;
-  std::map<lock_protocol::lockid_t, int> invalidateset;
+  std::set<lock_protocol::lockid_t> transferset;
 
   // Getter for lockset
   cached_lock_rsm& get_lock(lock_protocol::lockid_t);
-
-  // RPC requests to server
-  lock_protocol::status srelease(lock_protocol::lockid_t, cached_lock_rsm&);
 
  public:
   static int last_port;
@@ -148,17 +135,13 @@ class lock_client_cache_rsm : public lock_client {
   virtual lock_protocol::status release(lock_protocol::lockid_t);
 
   rlock_protocol::status invalidate_handler(lock_protocol::lockid_t, 
-					lock_protocol::xid_t, 
                                         std::string cid, int &);
   rlock_protocol::status revoke_handler(lock_protocol::lockid_t, 
 					std::string cid, int &);
   rlock_protocol::status transfer_handler(lock_protocol::lockid_t, 
-					  lock_protocol::xid_t, 
 				      	  unsigned int, 
-					  std::string, lock_protocol::xid_t,
-					  std::string &);
+					  std::string, int &);
   clock_protocol::status receive_handler(lock_protocol::lockid_t, 
-					 lock_protocol::xid_t, 
 					 std::string, int &);
 };
 

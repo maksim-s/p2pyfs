@@ -9,18 +9,10 @@
 #include "rsm_state_transfer.h"
 #include "rsm.h"
 
-class cachable_lock_rsm {
- public:
-  std::string owner;
-  std::map<std::string, lock_protocol::xid_t> xids;
-  cachable_lock_rsm();
-  ~cachable_lock_rsm();
-};
-
 class lock_server_cache_rsm : public rsm_state_transfer {
  private:
   class rsm *rsm;
-  std::map<lock_protocol::lockid_t, cachable_lock_rsm> lockset;
+  std::map<lock_protocol::lockid_t, std::string> owners;
   std::string es;
   pthread_mutex_t m;
 
@@ -31,6 +23,7 @@ class lock_server_cache_rsm : public rsm_state_transfer {
 
   std::string marshal_state();
   void unmarshal_state(std::string state);
+
   int acquire(lock_protocol::lockid_t, std::string id, unsigned int,
 	      lock_protocol::xid_t, int &);
   int release(lock_protocol::lockid_t, std::string id, lock_protocol::xid_t,
