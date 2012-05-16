@@ -244,6 +244,7 @@ lock_client_cache_rsm::transferer()
 
       pthread_cond_wait(&clck.allfree_cv, &clck.m);
     }
+
     clck.set_status(cached_lock_rsm::REVOKING);
 
   next:
@@ -270,6 +271,8 @@ lock_client_cache_rsm::transferer()
       pthread_mutex_unlock(&clck.m);
       int r = cl->call(clock_protocol::receive, lid, t.rxid, data, ret);
       pthread_mutex_lock(&clck.m);
+      tprintf("[%s] transferer rpc done -> %llu, {%d, %d}\n", 
+	      id.c_str(), lid, data.size(), clck.status());
       assert(r == clock_protocol::OK);
     }
     else {
