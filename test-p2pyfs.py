@@ -15,7 +15,6 @@ def createn(name, prefix, nf):
         FILE.close()
 
 def checkn(name, prefix, nf):
-    print "Checking"
     for i in range(nf):
         n = "%s/%s-%d" % (name, prefix, i)
         if not os.path.exists(n):

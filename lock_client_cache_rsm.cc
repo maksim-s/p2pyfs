@@ -172,19 +172,20 @@ lock_client_cache_rsm::revoker()
 
     while(true) {
       if (clck.status() == cached_lock_rsm::ACQUIRING) {
-	// The second acquire in flight MUST be WRITE
-	assert(clck.stype == lock_protocol::WRITE);
-	goto next;
+        // The second acquire in flight MUST be WRITE
+        assert(clck.stype == lock_protocol::WRITE);
+        goto next;
       }
 
       if (clck.status() == cached_lock_rsm::FREE) {
-	break;
+        break;
       }
 
       // Wait till lock is FREE
       pthread_cond_wait(&clck.allfree_cv, &clck.m);
     }
 
+    tprintf("revoking\n");
     clck.set_status(cached_lock_rsm::REVOKING);
 
   next:
@@ -195,6 +196,7 @@ lock_client_cache_rsm::revoker()
 
     // If not ACQUIRING, then set status to NONE
     if (clck.status() == cached_lock_rsm::REVOKING) {
+      tprintf("None2\n");
       clck.set_status(cached_lock_rsm::NONE);
       pthread_cond_broadcast(&clck.none_cv);
     }
@@ -233,18 +235,19 @@ lock_client_cache_rsm::transferer()
 
     while(true) {
       if (clck.status() == cached_lock_rsm::ACQUIRING) {
-	// The second acquire in flight MUST be WRITE
-	assert(clck.stype == lock_protocol::WRITE);
-	goto next;
+        // The second acquire in flight MUST be WRITE
+        assert(clck.stype == lock_protocol::WRITE);
+        goto next;
       }
 
       if (clck.status() == cached_lock_rsm::FREE) {
-	break;
+        break;
       }
 
       pthread_cond_wait(&clck.allfree_cv, &clck.m);
     }
 
+    tprintf("WTF %d\n", clck.status());
     clck.set_status(cached_lock_rsm::REVOKING);
 
   next:
@@ -266,6 +269,9 @@ lock_client_cache_rsm::transferer()
           lu->doevict(lid);
         }
       }
+      else if (clck.status() != cached_lock_rsm::ACQUIRING) {
+        clck.stype = lock_protocol::READ;
+      }
       
       tprintf("[%s] transferer -> %llu, {%d}\n", id.c_str(), lid, data.size());
       pthread_mutex_unlock(&clck.m);
@@ -280,14 +286,16 @@ lock_client_cache_rsm::transferer()
 	     t.rid.c_str());
     }
 
-    if (t.rtype == lock_protocol::READ) {
+    if (t.rtype == lock_protocol::READ && clck.status() == 
+        cached_lock_rsm::REVOKING) {
       // assert(clck.status() == cached_lock_rsm::REVOKING);
-      clck.stype = lock_protocol::READ;
+      tprintf("setting to free\n");
       clck.set_status(cached_lock_rsm::FREE);
       pthread_cond_broadcast(&clck.none_cv);
     }
     // If not ACQUIRING, then set status to NONE
     else if (clck.status() == cached_lock_rsm::REVOKING) {
+      tprintf("None1\n");
       clck.set_status(cached_lock_rsm::NONE);
     }
     pthread_mutex_unlock(&clck.m);
@@ -423,12 +431,12 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     tprintf("[%s] acquire -> %llu, %d [ACQUIRING]\n", id.c_str(), lid, type);
     while (clck.status() == cached_lock_rsm::ACQUIRING) {
       if (type == lock_protocol::READ) {
-	pthread_cond_wait(&clck.readfree_cv, &clck.m);
+        pthread_cond_wait(&clck.readfree_cv, &clck.m);
       }
       else {
-	// NOTE: We could actually be acquiring a READ lock from server,
-	// but doesn't matter, will trigger new acquire flow once done.
-	pthread_cond_wait(&clck.allfree_cv, &clck.m);
+        // NOTE: We could actually be acquiring a READ lock from server,
+        // but doesn't matter, will trigger new acquire flow once done.
+        pthread_cond_wait(&clck.allfree_cv, &clck.m);
       }
     }
     goto start;
@@ -440,12 +448,13 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
 
     while (clck.status() == cached_lock_rsm::LOCKED) {
       if (clck.otype == lock_protocol::READ && 
-	  type == lock_protocol::READ) {
-	clck.owners.insert(pthread_self());
-	// Other read waiters can also join in the action!
-	pthread_cond_broadcast(&clck.readfree_cv);
-	r = lock_protocol::OK;
-	break;
+          type == lock_protocol::READ) {
+
+          clck.owners.insert(pthread_self());
+          // Other read waiters can also join in the action!
+          pthread_cond_broadcast(&clck.readfree_cv);
+          r = lock_protocol::OK;
+          break;
       }
       // Doesn't matter what stype is. Even if it is READ and we want WRITE,
       // we will trigger a new acquire lock once we loop back.
@@ -457,9 +466,10 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     tprintf("[%s] acquire -> %llu, %d [FREE]\n", id.c_str(), lid, type);
     assert(clck.otype == lock_protocol::UNUSED);
     if (clck.stype == lock_protocol::WRITE || 
-	(clck.stype == lock_protocol::READ && type == lock_protocol::READ)) {
+        (clck.stype == lock_protocol::READ && type == lock_protocol::READ)) {
       clck.owners.insert(pthread_self());
       clck.otype = type;
+      tprintf("setting to locked\n");
       clck.set_status(cached_lock_rsm::LOCKED);
       r = lock_protocol::OK;
       break;
@@ -480,12 +490,13 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     // Don't own lock, ask server to grant ownership.
     tprintf("[%s] acquire -> %llu, %d [NONE]\n", id.c_str(), lid, type);
   sacquire:
+    tprintf("setting to acquiring\n");
     clck.set_status(cached_lock_rsm::ACQUIRING);
     clck.stype = type;
     while ((r = sacquire(lid, type, clck)) == lock_protocol::RETRY) {
       tprintf("acquire %llu waiting for retry_cv\n", lid);
       if (!clck.retried) {
-	pthread_cond_wait(&clck.retry_cv, &clck.m);
+        pthread_cond_wait(&clck.retry_cv, &clck.m);
       }
     }
 
@@ -506,6 +517,7 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     assert(clck.owners.size() == 0);
     clck.otype = type;
     clck.owners.insert(pthread_self());
+    tprintf("setting to locked2\n");
     clck.set_status(cached_lock_rsm::LOCKED);
     break;
   default:
@@ -541,6 +553,7 @@ lock_client_cache_rsm::release(lock_protocol::lockid_t lid)
   clck.owners.erase(pthread_self());
   if (clck.owners.size() == 0) {
     clck.otype = lock_protocol::UNUSED;
+    tprintf("setting to free\n");
     clck.set_status(cached_lock_rsm::FREE);
   }
   else {
