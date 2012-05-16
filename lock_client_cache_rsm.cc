@@ -281,7 +281,7 @@ lock_client_cache_rsm::transferer()
     }
 
     if (t.rtype == lock_protocol::READ) {
-      assert(clck.status() == cached_lock_rsm::REVOKING);
+      // assert(clck.status() == cached_lock_rsm::REVOKING);
       clck.stype = lock_protocol::READ;
       clck.set_status(cached_lock_rsm::FREE);
       pthread_cond_broadcast(&clck.none_cv);
