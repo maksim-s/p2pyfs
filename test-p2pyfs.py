@@ -85,6 +85,7 @@ def test2(n_clients, files):
 
 def test3(n_clients, files):
     print "Test 3: One file, all clients write to it"
+    t_initial = time.time()
     createn(files[0], "zz", 50)
     results = range(n_clients)
     threads = []
@@ -94,8 +95,10 @@ def test3(n_clients, files):
         threads.append(t)
     for t in threads:
         t.join()
+    t_final = time.time()
+    t_diff = t_final - t_initial
     if sum(results) == len(results) and checksize(files[0], "zz", 0, 1):
-        print "Test 3: OK!"
+        print "Test 3: OK! Took: %f secs" % float(t_diff)
     else:
         print "Test 3: Failure!"
 
@@ -109,6 +112,9 @@ for i in range(n_clients):
     files.append(os.path.abspath("yfs%d/" % i))
 
 test1(n_clients, files)
+print ""
 test2(n_clients, files)
+print ""
 test3(n_clients, files)
-
+print ""
+print "All tests completed!"
