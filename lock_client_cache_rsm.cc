@@ -819,6 +819,8 @@ lock_client_cache_rsm::receive_handler(lock_protocol::lockid_t lid,
   }
 
   if (clck.rif == lock_protocol::READ) {
+    clck.rrequests.clear();
+    clck.wrequests.clear();
     assert(clck.rrequests.size() == 0); // No xfer reqs for READ rif
     assert(clck.wrequests.size() == 0);
     assert(!clck.amiowner);
