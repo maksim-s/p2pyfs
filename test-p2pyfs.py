@@ -1,5 +1,5 @@
 #!/usr/bin/python
-import os, threading, sys
+import os, threading, sys, time
 
 def create(name, prefix):
     n = "%s/%s"
@@ -26,6 +26,7 @@ def checkn_wrapper(name, prefix, nf, result, index):
 
 def test1(n_clients, files):
     print "Test 1: 1 client writes files, a lot of other clients read them"
+    t_initial = time.time()
     createn(files[0], "aa", 50)
     results = range(n_clients)
     threads = []
@@ -35,8 +36,10 @@ def test1(n_clients, files):
         threads.append(t)
     for t in threads:
         t.join()
+    t_final = time.time()
+    t_diff = t_final - t_initial
     if sum(results) == len(results):
-        print "Test 1: OK!"
+        print "Test 1: OK! Took: %f secs" % float(t_diff)
     else:
         print "Test 1: Failure!"
 
@@ -44,6 +47,7 @@ def test1(n_clients, files):
 def test2(n_clients, files):
     print "Test 2: All clients make files and read them"
     threads = []
+    t_initial = time.time()
     for i in range(n_clients):
         t = threading.Thread(target = createn, args=(files[i], "aa" + str(i), 50))
         t.start()
@@ -58,8 +62,10 @@ def test2(n_clients, files):
             threads.append(t)
     for t in threads:
         t.join()
+    t_final = time.time()
+    t_diff = t_final - t_initial
     if sum(results) == len(results):
-        print "Test 2: OK!"
+        print "Test 2: OK! Took: %f secs" % float(t_diff)
     else:
         print "Test 2: Failure!"
 
