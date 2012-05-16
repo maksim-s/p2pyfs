@@ -6,8 +6,23 @@ def create(name, prefix):
     FILE = open(n, "w")
     FILE.close()
 
-def write(n):
-    pass
+def write(name, prefix, nf):
+    for i in range(nf):
+        n = "%s/%s-%d" % (name, prefix, i)
+        FILE = open(n, "w")
+        FILE.write("x")
+        FILE.close()
+
+def write_wrapper(name, prefix, nf, result, index):
+    write(name, prefix, nf)
+    result[index] = 1
+
+def checksize(name, prefix, i, size):
+    n = "%s/%s-%d" % (name, prefix, i)
+    if os.path.getsize(n) == size:
+        return True
+    return False
+
 def createn(name, prefix, nf):
     for i in range(nf):
         n = "%s/%s-%d" % (name, prefix, i)
@@ -40,7 +55,6 @@ def test1(n_clients, files):
     else:
         print "Test 1: Failure!"
 
-
 def test2(n_clients, files):
     print "Test 2: All clients make files and read them"
     threads = []
@@ -63,12 +77,21 @@ def test2(n_clients, files):
     else:
         print "Test 2: Failure!"
 
-
 def test3(n_clients, files):
     print "Test 3: One file, all clients write to it"
-    #creatn(files)
-    pass
-
+    createn(files[0], "zz", 50)
+    results = range(n_clients)
+    threads = []
+    for i in range(n_clients):
+        t = threading.Thread(target = write_wrapper, args=(files[i], "zz", 50, results, i))
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+    if sum(results) == len(results) and checksize(files[0], "zz", 0, 1):
+        print "Test 3: OK!"
+    else:
+        print "Test 3: Failure!"
 
 n_clients = 2
 if len(sys.argv) == 2:
@@ -81,4 +104,5 @@ for i in range(n_clients):
 
 test1(n_clients, files)
 test2(n_clients, files)
+test3(n_clients, files)
 

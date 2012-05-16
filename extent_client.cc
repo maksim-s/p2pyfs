@@ -34,7 +34,6 @@ extent_protocol::status
 extent_client::get(extent_protocol::extentid_t eid, std::string &buf)
 {
   extent_protocol::status r = extent_protocol::OK;
-  tprintf("get %llu\n", eid);
   pthread_mutex_lock(&m);
   if (extentset.count(eid)) {
     extent &extent = extentset[eid];
@@ -44,6 +43,7 @@ extent_client::get(extent_protocol::extentid_t eid, std::string &buf)
     // Should this ever happen?
     r = extent_protocol::NOENT;
   }
+  tprintf("get %llu - %s\n", eid, buf.c_str());
   pthread_mutex_unlock(&m);
   return r;
 }
@@ -71,7 +71,6 @@ extent_protocol::status
 extent_client::put(extent_protocol::extentid_t eid, std::string buf)
 {
   extent_protocol::status r = extent_protocol::OK;
-  tprintf("put %llu\n", eid);
   pthread_mutex_lock(&m);
   if (!extentset.count(eid)) {
     extentset[eid] = extent(eid);
@@ -88,7 +87,7 @@ extent_client::put(extent_protocol::extentid_t eid, std::string buf)
   else {
     extent.attr.size = 4096; // Directory size
   }
-
+  tprintf("put %llu, %s\n", eid, buf.c_str());
   pthread_mutex_unlock(&m);
   return r;
 }
@@ -147,6 +146,7 @@ extent_client::fetch(extent_protocol::extentid_t eid, std::string &data)
     rep << extent.attr.mtime;
     rep << extent.attr.ctime;
     rep << extent.attr.size;
+    tprintf("fetch %llu, %s\n", eid, extent.data.c_str());
   }
   else {
     rep << false;
