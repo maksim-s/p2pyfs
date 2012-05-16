@@ -42,7 +42,8 @@ typedef struct _request_t {
 class cached_lock_rsm {
  public:
   // State
-  enum lock_status { NONE, FREE, LOCKED, ACQUIRING, UPGRADING, REVOKING };
+  enum lock_status { NONE, FREE, LOCKED, ACQUIRING, UPGRADING, REVOKING,
+  XFER };
 
   // Am I owner?
   bool amiowner;
@@ -62,6 +63,9 @@ class cached_lock_rsm {
   // Request in flight?
   lock_protocol::lock_type rif;
 
+  // Hack for dealing with READ batches
+  std::string partition;
+
   // Mutex
   pthread_mutex_t m;
 
@@ -70,6 +74,7 @@ class cached_lock_rsm {
   pthread_cond_t readfree_cv;
   pthread_cond_t free_cv;
   pthread_cond_t none_cv;
+  pthread_cond_t cpempty_cv;
 
   // 'acquire' flow completed?
   bool acquired;

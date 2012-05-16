@@ -18,11 +18,13 @@ cached_lock_rsm::cached_lock_rsm()
   pthread_cond_init(&readfree_cv, NULL);
   pthread_cond_init(&free_cv, NULL);
   pthread_cond_init(&none_cv, NULL);
+  pthread_cond_init(&cpempty_cv, NULL);
 
   _status = NONE;
   acquired = received = false;
   rif = ltype = access = lock_protocol::UNUSED;
   amiowner = false;
+  partition = "";
 }
 
 cached_lock_rsm::~cached_lock_rsm()
@@ -32,14 +34,18 @@ cached_lock_rsm::~cached_lock_rsm()
   pthread_cond_destroy(&readfree_cv);
   pthread_cond_destroy(&free_cv);
   pthread_cond_destroy(&none_cv);
+  pthread_cond_destroy(&cpempty_cv);
 }
 
 void cached_lock_rsm::set_status(lock_status s) 
 {
+  tprintf("====> state change %d => %d\n", _status, s);
   switch(s) {
   case NONE:
     ltype = access  = lock_protocol::UNUSED;
     pthread_cond_broadcast(&none_cv);
+    break;
+  case XFER:
     break;
   case UPGRADING:
     break;
@@ -136,16 +142,287 @@ void
 lock_client_cache_rsm::revoker()
 {
   while (true) {
+    pthread_mutex_lock(&m);
+    while (revokeset.empty()) {
+      pthread_cond_wait(&revoker_cv, &m);
+    }
 
+    lock_protocol::lockid_t lid;
+    std::string cid;
+
+    std::map<lock_protocol::lock_protocol::lockid_t, std::string>::iterator it;
+    it = revokeset.begin();
+    assert(it->second.length() > 0); // There is a revoke to do
+    lid = it->first;
+    cid = it->second;
+    revokeset.erase(it); // Remove from revokeset
+    pthread_mutex_unlock(&m);
+
+    cached_lock_rsm &clck = get_lock(lid);
+    pthread_mutex_lock(&clck.m);
+
+    tprintf("[%s] revoker -> starting %llu\n", id.c_str(), lid);
+
+    while (true) {
+      // If UPGRADING, go ahead with revoke!
+      if (clck.status() == cached_lock_rsm::UPGRADING) {
+	tprintf("[%s] revoker -> %llu UPGRADING\n", id.c_str(), lid);
+	assert(clck.rif == lock_protocol::WRITE);
+	break;
+      }
+      // If ACQUIRING, then must process after done ACQUIRING
+      else if (clck.status() == cached_lock_rsm::ACQUIRING) {
+	assert(clck.rif == lock_protocol::READ);
+      }
+      // Else, always process after FREE
+      else {
+	assert(clck.access == lock_protocol::READ);
+	if (clck.status() == cached_lock_rsm::FREE) {
+	  break;
+	}
+      }
+
+      pthread_cond_wait(&clck.free_cv, &clck.m);
+    }
+
+    // FREE or UPGRADING
+    assert(clck.status() == cached_lock_rsm::FREE ||
+	   clck.status() == cached_lock_rsm::UPGRADING);
+
+    // No local owners
+    assert(clck.lowners.size() == 0 && 
+	   clck.ltype == lock_protocol::UNUSED);
+
+    // If FREE, set to REVOKING; must not be owner
+    if (clck.status() == cached_lock_rsm::FREE) {
+      assert(!clck.amiowner);
+      clck.set_status(cached_lock_rsm::REVOKING);
+    }
+
+    if (lu) {
+      lu->doevict(lid);
+    }
+
+    tprintf("[%s] revoker -> %llu sending revoke to %s\n", 
+	    id.c_str(), lid, cid.c_str());
+
+    handle h(cid);
+    rpcc *cl = h.safebind();
+    if (cl) {
+      int ret;
+      pthread_mutex_unlock(&clck.m);
+      int r = cl->call(clock_protocol::revoke, lid, id, ret);
+      pthread_mutex_lock(&clck.m);
+      assert(r == clock_protocol::OK);
+    }
+
+    // If REVOKING, then set status to NONE, and no longer OWNER
+    if (clck.status() == cached_lock_rsm::REVOKING) {
+      assert(!clck.amiowner);
+      clck.set_status(cached_lock_rsm::NONE);
+    }
+
+    pthread_mutex_unlock(&clck.m);
   }
 }
 
-// must process READ clck.requests before WRITEs
 void
 lock_client_cache_rsm::transferer()
 {
   while (true) {
+    tprintf("[%s] transferer -> starting iteration...\n", id.c_str());
+    pthread_mutex_lock(&m);
+    while (transferset.empty()) {
+      pthread_cond_wait(&transferer_cv, &m);
+    }
 
+    lock_protocol::lockid_t lid;
+    int ret;
+
+    unsigned int i, size;
+    std::string contents;
+    std::vector<request_t>::iterator rit;
+    std::set<std::string> cp;
+    std::set<std::string>::iterator wit;
+    request_t t;
+
+    std::set<lock_protocol::lock_protocol::lockid_t>::iterator it;
+    lid = *transferset.begin();
+    transferset.erase(lid); // Remove from revokeset
+    pthread_mutex_unlock(&m);
+
+    cached_lock_rsm &clck = get_lock(lid);
+    pthread_mutex_lock(&clck.m);
+
+    tprintf("[%s] transferer -> got some %llu xfer request to process [%d, %d]\n", 
+	    id.c_str(), lid, clck.rrequests.size(), clck.wrequests.size());
+
+    while (true) {
+      // If UPGRADING, go ahead with xfer iff it is to us!
+      if (clck.status() == cached_lock_rsm::UPGRADING) {
+	tprintf("[%s] transferer -> %llu UPGRADING\n", id.c_str(), lid);
+	assert(clck.rif == lock_protocol::WRITE);
+
+	if (clck.wrequests.front().id == id) {
+	  break;
+	}
+	if (clck.amiowner && clck.rrequests.size() == 0) {
+	  break;
+	}
+      }
+      // If ACQUIRING, then must process after done ACQUIRING
+      else if (clck.status() == cached_lock_rsm::ACQUIRING) {
+	assert(clck.rif != lock_protocol::UNUSED);
+      }
+      // Else, always process after FREE
+      else {
+	assert(clck.amiowner);
+	if (clck.status() == cached_lock_rsm::FREE) {
+	  break;
+	}
+      }
+
+      pthread_cond_wait(&clck.free_cv, &clck.m);
+    }
+
+    tprintf("[%s] transferer -> starting %llu\n", id.c_str(), lid);
+
+    // Block any local threads
+    if (clck.status() == cached_lock_rsm::FREE) {
+      clck.set_status(cached_lock_rsm::XFER);
+    }
+
+    // Are there READs to process before WRITEs?
+    if (clck.partition.length() == 0 && clck.wrequests.size() > 0) {
+      goto writes;
+    }
+
+    // Process all the READs 
+    if (clck.rrequests.size() == 0) {
+      goto writes;
+    }
+
+    size = clck.rrequests.size();
+    rit = clck.rrequests.begin();
+    for (i = 0; i < size; i++) {
+      t = *rit;
+      clck.rrequests.erase(rit++);
+
+      // Change state to reflect READxfer
+      clck.access = lock_protocol::READ;
+      clck.copyset.insert(t.id);
+
+      lu->dofetch(lid, contents);
+
+      // Send READ xfer
+      handle h(t.id);
+      rpcc *cl = h.safebind();
+      if (cl) {
+	tprintf("[%s] transferer -> %llu send READ [%s, %d]\n", 
+		id.c_str(), lid, t.id.c_str(), t.type);
+	pthread_mutex_unlock(&clck.m);
+	int r = cl->call(clock_protocol::receive, lid, contents, ret);
+	pthread_mutex_lock(&clck.m);
+	assert(r == clock_protocol::OK);
+      }
+
+      if (t.id == clck.partition) { // Processed partition?
+	break;
+      }
+    }
+
+  writes:
+    if (clck.wrequests.size() == 0) {
+      assert(clck.partition.length() == 0);
+    }
+    else {
+      clck.partition = ""; // This is no longer our partition
+      
+      // Process one WRITE and then if still requests remain, reloop
+      rit = clck.wrequests.begin();
+      t = *rit;
+      clck.wrequests.erase(rit++);
+      
+      // Invalidate first
+      cp = clck.copyset;
+      size = cp.size();
+      
+      for (wit = cp.begin(); wit != cp.end(); /*wit++*/) {
+	std::string cid = *wit;;
+	cp.erase(wit++);
+      
+	// Send invalidate
+	handle h(cid);
+	rpcc *cl = h.safebind();
+	if (cl) {
+	  tprintf("[%s] transferer -> %llu send invalidate [%s]\n", 
+		  id.c_str(), lid, cid.c_str());
+	  pthread_mutex_unlock(&clck.m);
+	  int r = cl->call(clock_protocol::invalidate, lid, id, ret);
+	  pthread_mutex_lock(&clck.m);
+	  assert(r == clock_protocol::OK);
+	}
+      }
+      
+      // copyset shouldn't be larger than size!
+      assert(size >= clck.copyset.size());
+      
+      // Wait for copyset to become empty
+      while (clck.copyset.size() != 0) {
+	pthread_cond_wait(&clck.cpempty_cv, &clck.m);
+      }
+      
+      // Modify state to reflect WRITE xfer
+      clck.access = lock_protocol::UNUSED;
+      clck.amiowner = false;
+
+      lu->dofetch(lid, contents);
+      if (lu) {
+	lu->doevict(lid);
+      }
+      
+      if (clck.status() != cached_lock_rsm::UPGRADING) {
+	clck.set_status(cached_lock_rsm::NONE);
+	// People waiting on FREE for XFER
+	pthread_cond_broadcast(&clck.readfree_cv);
+	pthread_cond_broadcast(&clck.free_cv);
+      }
+
+      // Send write xfer now
+      handle h(t.id);
+      rpcc *cl = h.safebind();
+      if (cl) {
+	tprintf("[%s] transferer -> %llu send WRITE [%s, %d]\n", 
+		id.c_str(), lid, t.id.c_str(), t.type);
+	pthread_mutex_unlock(&clck.m);
+	int r = cl->call(clock_protocol::receive, lid, contents, ret);
+	pthread_mutex_lock(&clck.m);
+	assert(r == clock_protocol::OK);
+      }
+    }
+
+    if (clck.status() == cached_lock_rsm::XFER) {
+      clck.set_status(cached_lock_rsm::FREE);
+    }
+
+    // Does the lock still have queued xfer requests?
+    if (clck.wrequests.size() > 0 ||
+	clck.rrequests.size() > 0) {
+      tprintf("[%s] transferer -> %llu rescheduling [%d, %d]\n", 
+	      id.c_str(), lid, clck.rrequests.size(), clck.wrequests.size());
+      pthread_mutex_unlock(&clck.m);
+      pthread_mutex_lock(&m);
+      transferset.insert(lid);
+      pthread_mutex_unlock(&m);
+    }
+    else {
+      tprintf("[%s] transferer -> %llu NOT rescheduling [%d, %d]\n", 
+	      id.c_str(), lid, clck.rrequests.size(), clck.wrequests.size());
+      pthread_mutex_unlock(&clck.m);
+      pthread_mutex_lock(&m);
+      transferset.erase(lid);
+      pthread_mutex_unlock(&m);
+    }
   }
 }
 
@@ -168,6 +445,19 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
   pthread_mutex_lock(&clck.m);
  start:
   switch(clck.status()) {
+  case cached_lock_rsm::XFER:
+    tprintf("[%s] acquire -> %llu, %d [XFER]\n", id.c_str(), lid, type);
+    while (clck.status() == cached_lock_rsm::XFER) {
+      if (type == lock_protocol::READ) {
+	pthread_cond_wait(&clck.readfree_cv, &clck.m);
+      }
+      else {
+	// NOTE: We could actually be acquiring a READ lock from server,
+	// but doesn't matter, will trigger new acquire flow once done.
+	pthread_cond_wait(&clck.free_cv, &clck.m);
+      }
+    }
+    goto start;
   case cached_lock_rsm::ACQUIRING:
     // Some other thread has already sent out request to server
     tprintf("[%s] acquire -> %llu, %d [ACQUIRING]\n", id.c_str(), lid, type);
@@ -245,19 +535,43 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     clck.set_status(cached_lock_rsm::ACQUIRING);
 
   sacquire:
-    assert(clck.rif == lock_protocol::UNUSED); // no req in flight
-    clck.rif = type;
-    int ret;
+    tprintf("[%s] acquire -> %llu, %d [sacquire] %d\n", 
+	    id.c_str(), lid, type, clck.rif);
+    // Can't have two requests in flight
+    assert(clck.rif == lock_protocol::UNUSED);
 
+    int ret;
     clck.acquired = false;
     clck.received = false;
+    clck.rif = type;
+
     tprintf("[%s] sacquire -> %llu, %d [%d]\n", id.c_str(), lid, 
 	  type, clck.status());
 
     pthread_mutex_unlock(&clck.m);
     r = rsmc->call(lock_protocol::acquire, lid, id, 
-		   (unsigned int) type, 0, ret);
+		   (unsigned int) type, (lock_protocol::xid_t) 0x0, ret);
     pthread_mutex_lock(&clck.m);
+
+    if (r == lock_protocol::XOK) {
+      tprintf("[%s] acquire -> %llu, %d Got XOK from LS.\n", 
+	      id.c_str(), lid, type);
+      r = lock_protocol::OK; 
+      clck.access = lock_protocol::WRITE; // have write lock from server
+      assert(clck.lowners.size() == 0);
+      clck.ltype = type;
+      clck.rif = lock_protocol::UNUSED;
+      clck.acquired = clck.received = clck.amiowner = true;
+
+      // Initialize empty extent
+      if (lu) {
+        lu->doinit(lid);
+      }
+
+      clck.lowners.insert(pthread_self());
+      clck.set_status(cached_lock_rsm::LOCKED);
+      break;
+    }
 
     assert(r == lock_protocol::OK);
 
@@ -270,11 +584,18 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
       pthread_cond_wait(&clck.receive_cv, &clck.m);
     }
 
-    tprintf("[%s] acquire -> %llu, %d Got lock + data!\n", 
-	    id.c_str(), lid, type);
+    tprintf("[%s] acquire -> %llu, %d Got lock + data! [%d]\n", 
+	    id.c_str(), lid, type, clck.lowners.size());
 
     assert(clck.access == type);
     assert(clck.lowners.size() == 0);
+
+    if (type == lock_protocol::WRITE) {
+      clck.amiowner = true;
+    }
+    else {
+      clck.amiowner = false;
+    }
 
     clck.acquired = true;
     clck.copyset.clear();
@@ -282,7 +603,6 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     clck.ltype = type;
     clck.lowners.insert(pthread_self());
     clck.set_status(cached_lock_rsm::LOCKED);
-
     break;
   default:
     break;
@@ -335,6 +655,19 @@ clock_protocol::status
 lock_client_cache_rsm::revoke_handler(lock_protocol::lockid_t lid,
                                        std::string cid, int&)
 {
+  cached_lock_rsm &clck = get_lock(lid);
+  pthread_mutex_lock(&clck.m);
+  tprintf("[%s] revoke_handler -> %llu [access: %d, state: %d, cp: %d]\n", 
+	  id.c_str(), lid, clck.access, clck.status(), clck.copyset.size());
+
+  clck.copyset.erase(cid);
+
+  if (clck.copyset.size() == 0) {
+    pthread_cond_signal(&clck.cpempty_cv); // transferer() waiting
+    pthread_mutex_unlock(&m);
+  } 
+
+  pthread_mutex_unlock(&clck.m);
   return clock_protocol::OK;
 }
 
@@ -343,6 +676,36 @@ clock_protocol::status
 lock_client_cache_rsm::invalidate_handler(lock_protocol::lockid_t lid, 
                                       std::string cid, int &)
 {
+  cached_lock_rsm &clck = get_lock(lid);
+  pthread_mutex_lock(&clck.m);
+
+  tprintf("[%s] invalidate_handler -> %llu [%d]\n", id.c_str(), lid,
+	  clck.status());
+
+  // Shouldn't receive invalidates > 1 times!
+  assert(clck.status() != cached_lock_rsm::NONE);
+
+  // access should be READ, else can't be in copyset
+  assert(clck.access == lock_protocol::READ);
+
+  if (clck.status() == cached_lock_rsm::ACQUIRING) {
+    // READ must be in flight if ACQUIRING; WRITE won't be in copyset
+    assert(clck.rif == lock_protocol::READ); 
+  }
+  else if (clck.status() == cached_lock_rsm::UPGRADING) {
+    // WRITE must be in flight if UPGRADING (we were in clck.copyset)
+    assert(clck.rif == lock_protocol::WRITE); 
+  }
+
+  pthread_mutex_unlock(&clck.m);
+
+  tprintf("[%s] invalidate_hanlder -> adding %llu to revokeset\n", 
+	  id.c_str(), lid);
+  pthread_mutex_lock(&m);
+  revokeset[lid] = cid;
+  pthread_cond_signal(&revoker_cv); 
+  pthread_mutex_unlock(&m);
+  
   return clock_protocol::OK;
 }
 
@@ -353,6 +716,78 @@ lock_client_cache_rsm::transfer_handler(lock_protocol::lockid_t lid,
 					int &)
 {
   int r = rlock_protocol::OK;
+  tprintf("[%s] transfer_handler -> %llu [rtype: %d, rid: %s]\n", 
+	  id.c_str(), lid, 
+	  rtype,  rid.c_str());
+
+  assert(rtype != lock_protocol::UNUSED);
+
+  cached_lock_rsm &clck = get_lock(lid);
+  pthread_mutex_lock(&clck.m);
+
+  assert(clck.status() != cached_lock_rsm::NONE);
+
+  if (clck.status() == cached_lock_rsm::ACQUIRING) {
+    // READ must be in flight if ACQUIRING; WRITE won't be in copyset
+    assert(clck.rif == lock_protocol::WRITE); 
+  }
+  else if (clck.status() == cached_lock_rsm::UPGRADING) {
+    // WRITE must be in flight if UPGRADING (we were in clck.copyset)
+    assert(clck.rif == lock_protocol::WRITE); 
+  }
+  else {
+    // Must be owner!
+    assert(clck.amiowner);
+  }
+
+  tprintf("[%s] transfer_handler -> processing %llu [ %d, %s]\n", 
+	  id.c_str(), lid, rtype, rid.c_str());
+
+  request_t t;
+  t.id = rid;
+  t.type = (lock_protocol::lock_type) rtype;
+
+  // At most two WRITE xfers
+  assert(clck.wrequests.size() <= 2);
+
+  if (rtype == lock_protocol::WRITE) {
+    assert(clck.wrequests.size() <= 1);
+
+    // Can only get > 1 WRITE if we were owner with READ access, tried
+    // to UPGRADE and then someone else tried to ACQUIRE WRITE;
+    if (clck.wrequests.size() != 0) {
+      assert(clck.status() == cached_lock_rsm::UPGRADING);
+      assert(clck.rif == lock_protocol::WRITE);
+      assert(clck.access == lock_protocol::READ);
+      assert(rid != id);
+    }
+    else {
+      // Make partition
+      if (clck.rrequests.size() > 0) {
+	clck.partition = clck.rrequests.back().id;
+      }
+      else {
+	clck.partition = "";
+      }
+    }
+    clck.wrequests.push_back(t);
+  }
+  else {
+    // There can be two batches <RRR><W(me)><RRR><W(other)>?
+    if (clck.wrequests.size() > 0) {
+      assert(clck.partition.length() != 0);
+    }
+    clck.rrequests.push_back(t);
+  }
+
+  pthread_mutex_unlock(&clck.m);
+  pthread_mutex_lock(&m);
+  tprintf("[%s] transfer_handler -> signalling after adding %llu [ %d, %s]\n", 
+	  id.c_str(), lid, rtype, rid.c_str());
+  transferset.insert(lid);
+  pthread_cond_signal(&transferer_cv);
+  pthread_mutex_unlock(&m);
+
   return r;
 }
 
@@ -361,5 +796,31 @@ lock_client_cache_rsm::receive_handler(lock_protocol::lockid_t lid,
 				       std::string data, int &)
 {
   int r = rlock_protocol::OK;
+  cached_lock_rsm &clck = get_lock(lid);
+  pthread_mutex_lock(&clck.m);
+
+  tprintf("[%s] receive_handler -> %llu Got [%d]\n", 
+	  id.c_str(), lid, data.length());
+
+  assert(clck.status() == cached_lock_rsm::ACQUIRING ||
+	 clck.status() == cached_lock_rsm::UPGRADING); // Must be in acquiring
+
+  assert(clck.rif != lock_protocol::UNUSED);
+
+  if (lu) {
+    lu->dopopulate(lid, data);
+  }
+
+  if (clck.rif == lock_protocol::READ) {
+    assert(clck.rrequests.size() == 0); // No xfer reqs for READ rif
+    assert(clck.wrequests.size() == 0);
+    assert(!clck.amiowner);
+  }
+
+  clck.access = clck.rif;
+  clck.copyset.clear(); // Optimistically clear?
+  clck.received = true;
+  pthread_cond_signal(&clck.receive_cv); // at most 1 thread waiting
+  pthread_mutex_unlock(&clck.m);
   return r;
 }
