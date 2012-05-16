@@ -15,7 +15,6 @@ def createn(name, prefix, nf):
         FILE.close()
 
 def checkn(name, prefix, nf):
-    print "Checking"
     for i in range(nf):
         n = "%s/%s-%d" % (name, prefix, i)
         if not os.path.exists(n):
@@ -27,11 +26,11 @@ def checkn_wrapper(name, prefix, nf, result, index):
 
 def test1(n_clients, files):
     print "Test 1: 1 client writes files, a lot of other clients read them"
-    createn(files[0], "aa", 20)
+    createn(files[0], "aa", 50)
     results = range(n_clients)
     threads = []
     for i in range(n_clients):
-        t = threading.Thread(target = checkn_wrapper, args=(files[i], "aa", 20, results, i))
+        t = threading.Thread(target = checkn_wrapper, args=(files[i], "aa", 50, results, i))
         t.start()
         threads.append(t)
     for t in threads:
@@ -46,7 +45,7 @@ def test2(n_clients, files):
     print "Test 2: All clients make files and read them"
     threads = []
     for i in range(n_clients):
-        t = threading.Thread(target = createn, args=(files[i], "aa" + str(i), 20))
+        t = threading.Thread(target = createn, args=(files[i], "aa" + str(i), 50))
         t.start()
         threads.append(t)
     for t in threads:
@@ -54,7 +53,7 @@ def test2(n_clients, files):
     results = range(n_clients * n_clients)
     for i in range(n_clients):
         for j in range(n_clients):
-            t = threading.Thread(target = checkn_wrapper, args=(files[i], "aa" + str(j), 20, results, i * n_clients + j))
+            t = threading.Thread(target = checkn_wrapper, args=(files[i], "aa" + str(j), 50, results, i * n_clients + j))
             t.start()
             threads.append(t)
     for t in threads:
@@ -82,4 +81,3 @@ for i in range(n_clients):
 
 test1(n_clients, files)
 test2(n_clients, files)
-

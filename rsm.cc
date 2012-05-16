@@ -421,6 +421,7 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
     return ret;
   }
   else {
+    tprintf("client_invoke: starting to process %s\n", req.c_str());
     int r, i = 0;
     std::vector<std::string> replicas = cfg->get_view(vid_commit);
     std::vector<std::string>::iterator it;
@@ -454,6 +455,7 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
     }
   }
 
+  tprintf("client_invoke: starting to execute on primary %s\n", req.c_str());
   // If all good so far, execute it on primary
   if (ret == rsm_client_protocol::OK) {
     execute(procno, req, r);

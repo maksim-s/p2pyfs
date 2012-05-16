@@ -143,7 +143,7 @@ lock_client_cache_rsm::revoker()
 {
   while (true) {
     pthread_mutex_lock(&m);
-    while (revokeset.empty()) {
+    while (revokeset.size() == 0) {
       pthread_cond_wait(&revoker_cv, &m);
     }
 
@@ -232,7 +232,7 @@ lock_client_cache_rsm::transferer()
   while (true) {
     tprintf("[%s] transferer -> starting iteration...\n", id.c_str());
     pthread_mutex_lock(&m);
-    while (transferset.empty()) {
+    while (transferset.size() == 0) {
       pthread_cond_wait(&transferer_cv, &m);
     }
 
@@ -256,6 +256,12 @@ lock_client_cache_rsm::transferer()
     cached_lock_rsm &clck = get_lock(lid);
     pthread_mutex_lock(&clck.m);
 
+    if (clck.wrequests.size() == 0 &&
+	clck.rrequests.size()== 0) {
+      pthread_mutex_unlock(&clck.m);
+      continue;
+    }
+
     tprintf("[%s] transferer -> got some %llu xfer request to process [%d, %d]\n", 
 	    id.c_str(), lid, clck.rrequests.size(), clck.wrequests.size());
 
@@ -268,7 +274,7 @@ lock_client_cache_rsm::transferer()
 	if (clck.wrequests.front().id == id) {
 	  break;
 	}
-	if (clck.amiowner && clck.rrequests.size() == 0) {
+	if (clck.amiowner) {// && clck.rrequests.size() == 0) {
 	  break;
 	}
       }
@@ -334,12 +340,15 @@ lock_client_cache_rsm::transferer()
       }
     }
 
+    tprintf("[%s] transferer -> %llu done with READs [%d, %d]\n", 
+	    id.c_str(), lid, clck.rrequests.size(), clck.wrequests.size());
+
   writes:
     if (clck.rrequests.size() > 0 &&
-	oldp != clck.partition) {
+      	oldp != clck.partition) {
       // Do nothing, skip WRITEs
     }
-    if (clck.wrequests.size() == 0) {
+    else if (clck.wrequests.size() == 0) {
       assert(clck.partition.length() == 0);
     }
     else {
@@ -426,9 +435,6 @@ lock_client_cache_rsm::transferer()
       tprintf("[%s] transferer -> %llu NOT rescheduling [%d, %d]\n", 
 	      id.c_str(), lid, clck.rrequests.size(), clck.wrequests.size());
       pthread_mutex_unlock(&clck.m);
-      pthread_mutex_lock(&m);
-      transferset.erase(lid);
-      pthread_mutex_unlock(&m);
     }
   }
 }
@@ -594,7 +600,7 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid,
     tprintf("[%s] acquire -> %llu, %d Got lock + data! [%d]\n", 
 	    id.c_str(), lid, type, clck.lowners.size());
 
-    assert(clck.access == type);
+    //    assert(clck.access == type);
     assert(clck.lowners.size() == 0);
 
     if (type == lock_protocol::WRITE) {
