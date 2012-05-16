@@ -256,15 +256,15 @@ lock_client_cache_rsm::transferer()
       int ret;
       std::string data = "";
       if (lu) {
-	lu->dofetch(lid, data);
+        lu->dofetch(lid, data);
       }
 
       // Evict before sending? Won't work in failure case.
       if (t.rtype == lock_protocol::WRITE) {
-	tprintf("[%s] transferer -> %llu evicting!\n", id.c_str(), lid);
-	if (lu) {
-	  lu->doevict(lid);
-	}
+        tprintf("[%s] transferer -> %llu evicting!\n", id.c_str(), lid);
+        if (lu) {
+          lu->doevict(lid);
+        }
       }
       
       tprintf("[%s] transferer -> %llu, {%d}\n", id.c_str(), lid, data.size());
@@ -627,6 +627,7 @@ lock_client_cache_rsm::retry_handler(lock_protocol::lockid_t lid,
   // Check cxid!
   if (clck.cxid != xid || clck.retried) goto end;
   tprintf("[%s] retry_handler -> %llu\n", id.c_str(), lid);
+  tprintf("%d\n", clck.status());
   assert(clck.status() == cached_lock_rsm::ACQUIRING); // Must be in acquiring
   clck.retried = true;
   pthread_cond_signal(&clck.retry_cv); // At most one thread waiting
