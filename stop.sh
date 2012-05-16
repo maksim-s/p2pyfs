@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 
-YFSDIR1=$PWD/yfs1
-YFSDIR2=$PWD/yfs2
+NUM_YFS=$1
 
-export PATH=$PATH:/usr/local/bin
-UMOUNT="umount"
-if [ -f "/usr/local/bin/fusermount" -o -f "/usr/bin/fusermount" -o -f "/bin/fusermount" ]; then
-    UMOUNT="fusermount -u";
+if [ -z $NUM_YFS ]; then
+    NUM_YFS=2
 fi
-$UMOUNT $YFSDIR1
-$UMOUNT $YFSDIR2
+export PATH=$PATH:/usr/local/bin
+
+for ((i=0; i<$NUM_YFS; i++))
+do
+    YFS_DIR=$PWD"/yfs"$i
+    UMOUNT="umount"
+    if [ -f "/usr/local/bin/fusermount" -o -f "/usr/bin/fusermount" -o -f "/bin/fusermount" ]; then
+	UMOUNT="fusermount -u";
+    fi
+    echo "$UMOUNT $YFS_DIR"
+    $UMOUNT $YFS_DIR    
+done
+
+
 killall extent_server
 killall yfs_client
 killall lock_server
