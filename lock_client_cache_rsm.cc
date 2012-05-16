@@ -246,6 +246,8 @@ lock_client_cache_rsm::transferer()
     std::set<std::string>::iterator wit;
     request_t t;
 
+    std::string oldp;
+
     std::set<lock_protocol::lock_protocol::lockid_t>::iterator it;
     lid = *transferset.begin();
     transferset.erase(lid); // Remove from revokeset
@@ -302,11 +304,12 @@ lock_client_cache_rsm::transferer()
       goto writes;
     }
 
+    oldp = clck.partition;
+
     size = clck.rrequests.size();
-    rit = clck.rrequests.begin();
     for (i = 0; i < size; i++) {
-      t = *rit;
-      clck.rrequests.erase(rit++);
+      t = *(clck.rrequests.begin()); // get first guy and delete
+      clck.rrequests.erase(clck.rrequests.begin());
 
       // Change state to reflect READxfer
       clck.access = lock_protocol::READ;
@@ -332,6 +335,10 @@ lock_client_cache_rsm::transferer()
     }
 
   writes:
+    if (clck.rrequests.size() > 0 &&
+	oldp != clck.partition) {
+      // Do nothing, skip WRITEs
+    }
     if (clck.wrequests.size() == 0) {
       assert(clck.partition.length() == 0);
     }
