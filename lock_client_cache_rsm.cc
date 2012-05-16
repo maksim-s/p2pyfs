@@ -284,12 +284,11 @@ lock_client_cache_rsm::transferer()
       assert(clck.status() == cached_lock_rsm::REVOKING);
       clck.stype = lock_protocol::READ;
       clck.set_status(cached_lock_rsm::FREE);
+      pthread_cond_broadcast(&clck.none_cv);
     }
     // If not ACQUIRING, then set status to NONE
     else if (clck.status() == cached_lock_rsm::REVOKING) {
       clck.set_status(cached_lock_rsm::NONE);
-      // remove from extent cache
-      pthread_cond_broadcast(&clck.none_cv);
     }
     pthread_mutex_unlock(&clck.m);
   }
