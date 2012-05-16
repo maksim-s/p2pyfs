@@ -44,6 +44,7 @@ def test1(n_clients, files):
 def test2(n_clients, files):
     print "Test 2: All clients make files and read them"
     threads = []
+    n_clients %= 3
     for i in range(n_clients):
         t = threading.Thread(target = createn, args=(files[i], "aa" + str(i), 50))
         t.start()
