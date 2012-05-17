@@ -17,11 +17,12 @@ def write_wrapper(name, prefix, nf, result, index):
     write(name, prefix, nf)
     result[index] = 1
 
-def checksize(name, prefix, i, size):
-    n = "%s/%s-%d" % (name, prefix, i)
-    if os.path.getsize(n) == size:
-        return True
-    return False
+def checksize(name, prefix, nf, size):
+    for i in range(nf):
+        n = "%s/%s-%d" % (name, prefix, i)
+        if os.path.getsize(n) == size:
+            return True
+        return False
 
 def createn(name, prefix, nf):
     for i in range(nf):
@@ -40,13 +41,13 @@ def checkn_wrapper(name, prefix, nf, result, index):
   result[index] = checkn(name, prefix, nf)
 
 def test1(n_clients, files):
-    print "Test 1: 1 client writes files, a lot of other clients read them"
+    print "Test 1: 1 client writes 100 files, %d clients read them" % (n_clients)
     t_initial = time.time()
-    createn(files[0], "aa", 50)
+    createn(files[0], "aa", 100)
     results = range(n_clients)
     threads = []
     for i in range(n_clients):
-        t = threading.Thread(target = checkn_wrapper, args=(files[i], "aa", 50, results, i))
+        t = threading.Thread(target = checkn_wrapper, args=(files[i], "aa", 100, results, i))
         t.start()
         threads.append(t)
     for t in threads:
@@ -59,11 +60,11 @@ def test1(n_clients, files):
         print "Test 1: Failure!"
 
 def test2(n_clients, files):
-    print "Test 2: All clients make files and read them"
+    print "Test 2: Each client makes 50 files and reads all %d files" % (n_clients * 50)
     threads = []
     t_initial = time.time()
     for i in range(n_clients):
-        t = threading.Thread(target = createn, args=(files[i], "aa" + str(i), 50))
+        t = threading.Thread(target = createn, args=(files[i], "bb" + str(i), 50))
         t.start()
         threads.append(t)
     for t in threads:
@@ -71,7 +72,7 @@ def test2(n_clients, files):
     results = range(n_clients * n_clients)
     for i in range(n_clients):
         for j in range(n_clients):
-            t = threading.Thread(target = checkn_wrapper, args=(files[i], "aa" + str(j), 50, results, i * n_clients + j))
+            t = threading.Thread(target = checkn_wrapper, args=(files[i], "bb" + str(j), 50, results, i * n_clients + j))
             t.start()
             threads.append(t)
     for t in threads:
@@ -84,20 +85,20 @@ def test2(n_clients, files):
         print "Test 2: Failure!"
 
 def test3(n_clients, files):
-    print "Test 3: One file, all clients write to it"
+    print "Test 3: 1 client writes 100 files, %d clients write them" % (n_clients)
     t_initial = time.time()
-    createn(files[0], "zz", 50)
+    createn(files[0], "zz", 100)
     results = range(n_clients)
     threads = []
     for i in range(n_clients):
-        t = threading.Thread(target = write_wrapper, args=(files[i], "zz", 50, results, i))
+        t = threading.Thread(target = write_wrapper, args=(files[i], "zz", 100, results, i))
         t.start()
         threads.append(t)
     for t in threads:
         t.join()
     t_final = time.time()
     t_diff = t_final - t_initial
-    if sum(results) == len(results) and checksize(files[0], "zz", 0, 1):
+    if sum(results) == len(results) and checksize(files[0], "zz", n_clients, 1):
         print "Test 3: OK! Took: %f secs" % float(t_diff)
     else:
         print "Test 3: Failure!"
